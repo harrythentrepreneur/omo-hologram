@@ -1,0 +1,272 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+  <title>omo · hermes dashboard</title>
+  <script type="module" src="/text-overlay.js"></script>
+  <script src="/voice-mode.js"></script>
+  <style>
+    :root {
+      --bg: #100f0d;
+      --panel: #181715;
+      --panel-2: #1f1d1a;
+      --border: #2a2925;
+      --text: #f4efe5;
+      --text-2: #b6b0a3;
+      --text-3: #6e6a60;
+      --accent: #f4efe5;
+      --warn: #d6a25a;
+      --err:  #d97757;
+      --ok:   #74c69d;
+    }
+    * { box-sizing: border-box; }
+    html, body {
+      margin: 0;
+      padding: 0;
+      height: 100%;
+      background: var(--bg);
+      color: var(--text);
+      font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
+      font-size: 12.5px;
+      overflow: hidden;
+    }
+    #app {
+      display: flex;
+      flex-direction: column;
+      height: 100vh;
+    }
+    #topbar {
+      flex: 0 0 auto;
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      padding: 8px 14px;
+      background: var(--panel);
+      border-bottom: 1px solid var(--border);
+      font-size: 12px;
+      color: var(--text-2);
+    }
+    #topbar .brand {
+      color: var(--text);
+      letter-spacing: 0.04em;
+      font-weight: 700;
+      text-transform: uppercase;
+      font-size: 11.5px;
+    }
+    #topbar .target {
+      color: var(--text-3);
+      font-size: 11px;
+      letter-spacing: 0.02em;
+    }
+    #topbar .spacer { flex: 1; }
+    #topbar button {
+      background: rgba(255, 252, 245, 0.04);
+      color: var(--text);
+      border: 1px solid var(--border);
+      border-radius: 4px;
+      padding: 4px 10px;
+      font: inherit;
+      cursor: pointer;
+    }
+    #topbar button:hover { background: rgba(255, 252, 245, 0.1); }
+    #topbar a.back {
+      color: var(--text-2);
+      text-decoration: none;
+      font-size: 12px;
+    }
+    #topbar a.back:hover { color: var(--text); }
+
+    #stage {
+      flex: 1 1 auto;
+      position: relative;
+      min-height: 0;
+      background: var(--bg);
+    }
+    #frame {
+      width: 100%;
+      height: 100%;
+      border: 0;
+      display: block;
+      background: var(--bg);
+    }
+
+    #overlay {
+      position: absolute;
+      inset: 0;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      padding: 24px;
+      background: linear-gradient(180deg, rgba(16,15,13,0.92), rgba(16,15,13,0.96));
+      backdrop-filter: blur(2px);
+      transition: opacity 380ms ease;
+      pointer-events: auto;
+      z-index: 2;
+    }
+    #overlay.hidden {
+      opacity: 0;
+      pointer-events: none;
+    }
+    #overlay .card {
+      max-width: 520px;
+      background: var(--panel-2);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 22px 26px;
+      color: var(--text);
+      text-align: left;
+    }
+    #overlay .card h2 {
+      margin: 0 0 10px 0;
+      font-size: 14px;
+      letter-spacing: 0.06em;
+      text-transform: uppercase;
+      color: var(--text);
+    }
+    #overlay .card p {
+      margin: 0 0 12px 0;
+      line-height: 1.55;
+      color: var(--text-2);
+      font-size: 12.5px;
+    }
+    #overlay .card code {
+      display: inline-block;
+      background: rgba(255, 252, 245, 0.06);
+      border: 1px solid var(--border);
+      border-radius: 4px;
+      padding: 2px 8px;
+      color: var(--text);
+      font-family: inherit;
+      font-size: 12px;
+    }
+    #overlay .card .hint {
+      color: var(--text-3);
+      font-size: 11.5px;
+    }
+    #overlay.error .card { border-color: rgba(217, 119, 87, 0.55); }
+    #overlay.error h2 { color: var(--err); }
+
+    #status {
+      flex: 0 0 auto;
+      padding: 4px 14px;
+      background: var(--panel);
+      border-top: 1px solid var(--border);
+      font-size: 11px;
+      color: var(--text-3);
+      display: flex;
+      gap: 16px;
+      align-items: center;
+    }
+    #status .dot {
+      display: inline-block;
+      width: 7px; height: 7px; border-radius: 50%;
+      background: var(--text-3);
+      margin-right: 6px;
+      vertical-align: middle;
+    }
+    #status.loading .dot { background: var(--warn); }
+    #status.loaded  .dot { background: var(--ok); }
+    #status.failed  .dot { background: var(--err); }
+    #status .spacer { flex: 1; }
+  </style>
+</head>
+<body>
+  <div id="app">
+    <div id="topbar">
+      <div class="brand">omo · hermes dashboard</div>
+      <div class="target">→ http://localhost:9119</div>
+      <div class="spacer"></div>
+      <button id="btn-restart" title="reload the dashboard iframe">restart</button>
+      <a class="back" href="/squad">← /squad</a>
+    </div>
+    <div id="stage">
+      <iframe id="frame" src="http://localhost:9119" referrerpolicy="no-referrer" allow="clipboard-read; clipboard-write"></iframe>
+      <div id="overlay">
+        <div class="card">
+          <h2 id="overlay-title">Hermes dashboard not running</h2>
+          <p>Start it with <code>hermes dashboard --no-open</code> in your terminal, then this view will connect automatically.</p>
+          <p class="hint">Expected at <code>http://localhost:9119</code>. Click <em>restart</em> in the topbar after starting the daemon to retry.</p>
+        </div>
+      </div>
+    </div>
+    <div id="status" class="loading">
+      <span><span class="dot"></span><span id="status-label">iframe: loading</span></span>
+      <span class="spacer"></span>
+      <span id="status-hint">target: http://localhost:9119</span>
+    </div>
+  </div>
+
+  <script>
+    (function() {
+      const frame   = document.getElementById('frame');
+      const overlay = document.getElementById('overlay');
+      const overlayTitle = document.getElementById('overlay-title');
+      const statusEl = document.getElementById('status');
+      const statusLabel = document.getElementById('status-label');
+      const btnRestart = document.getElementById('btn-restart');
+
+      function setState(state) {
+        statusEl.classList.remove('idle', 'loading', 'loaded', 'failed');
+        statusEl.classList.add(state);
+        statusLabel.textContent = 'iframe: ' + state;
+      }
+
+      function showOverlay(title) {
+        overlay.classList.remove('hidden');
+        overlay.classList.add('error');
+        if (title) overlayTitle.textContent = title;
+      }
+      function hideOverlay() {
+        overlay.classList.add('hidden');
+        overlay.classList.remove('error');
+      }
+
+      // Initial state: assume we're loading. Cross-origin (localhost:9119
+      // vs whatever omo is served from) means we cannot read the iframe's
+      // contents, but the `load` event still fires on successful nav.
+      setState('loading');
+
+      // Fallback: if the iframe never reports load within ~3.5s, assume
+      // the Hermes daemon isn't up. We can't catch network errors directly
+      // on cross-origin iframes, so this timeout is our error signal.
+      let loaded = false;
+      const failTimer = setTimeout(() => {
+        if (!loaded) {
+          setState('failed');
+          showOverlay('Hermes dashboard not running');
+        }
+      }, 3500);
+
+      frame.addEventListener('load', () => {
+        loaded = true;
+        clearTimeout(failTimer);
+        setState('loaded');
+        hideOverlay();
+      });
+      frame.addEventListener('error', () => {
+        clearTimeout(failTimer);
+        setState('failed');
+        showOverlay('Hermes dashboard not running');
+      });
+
+      btnRestart.addEventListener('click', () => {
+        loaded = false;
+        setState('loading');
+        showOverlay('Hermes dashboard not running');
+        // Force a fresh nav so the iframe re-tries the connection.
+        const target = 'http://localhost:9119/?_t=' + Date.now();
+        frame.src = target;
+        // Re-arm the fallback timer for this attempt.
+        const t = setTimeout(() => {
+          if (!loaded) {
+            setState('failed');
+            showOverlay('Hermes dashboard not running');
+          }
+        }, 3500);
+        frame.addEventListener('load', () => { clearTimeout(t); }, { once: true });
+      });
+    })();
+  </script>
+</body>
+</html>

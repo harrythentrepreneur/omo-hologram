@@ -1,0 +1,3401 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, user-scalable=no">
+<title>omo · holoscope</title>
+<script>
+  // Pre-paint theme resolution — kept in sync with /landing via the
+  // shared `omo:landing:theme` key so the two pages flip together.
+  // Defaults to dark (the physical-projector setup expects black bg).
+  (function () {
+    try {
+      var t = localStorage.getItem('omo:landing:theme') || 'dark';
+      document.documentElement.setAttribute('data-theme', t);
+    } catch (_) {
+      document.documentElement.setAttribute('data-theme', 'dark');
+    }
+  })();
+</script>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@300;400;500;600&display=swap" rel="stylesheet">
+<script src="/client-log.js"></script>
+<script src="/i18n.js"></script>
+<script type="module" src="/text-overlay.js"></script>
+<script src="/voice-mode.js"></script>
+<style>
+  /* Glass-cylinder hologram. The viewer puts a transparent acrylic/glass
+     cylinder on the screen and sees a floating rectangular picture inside
+     it. The trick: because the cylinder bends light, a rectangle drawn on
+     the flat screen shows up curved. To compensate, we pre-distort the
+     image into an annular sector — a "fan" in polar coordinates — that
+     the cylinder then un-bends back into a rectangle for the viewer.
+
+     Pipeline:
+       avatar scene → WebGLRenderTarget (square source texture)
+                    → ShaderPass (polar anamorphic warp)
+                    → screen
+     The warp's radial/angular extents, center, and flips all depend on
+     the physical cylinder, so they're tuned in the Calibration panel and
+     persisted to localStorage.
+
+     The visible chrome (corner ticks, meta nav, footer, status pill,
+     toolbar, calibration panel, boot splash, greeting card) is themed
+     in lock-step with /landing — same tokens, same toggle key. Dark
+     stays black-on-cyan for the physical cylinder. Light is cream paper
+     with phosphor-green grid + amber accent — the desktop browser look. */
+
+  /* ─── theme tokens (shared with /landing via omo:landing:theme) ─── */
+  :root, :root[data-theme="dark"] {
+    --bg:           #000;
+    --fg:           #f5f5f0;
+    --dim:          #6a6a64;
+    --faint:        #2a2a26;
+    --accent:       #ffd86b;
+    --accent-rgb:   255, 216, 107;
+    --holo:         110, 231, 255;     /* cyan body of the hologram */
+    --listening:    255, 102, 179;     /* warm pink when mic is hot */
+    --err:          255, 90, 122;
+    --line-color:   var(--dim);
+    --grain:        transparent;
+    --canvas-bg:    #000;              /* WebGL clear color matches */
+    color-scheme:   dark;
+  }
+  :root[data-theme="light"] {
+    --bg:           #f1ece0;            /* cream paper — matches /landing */
+    --fg:           #15201a;            /* deep phosphor-tinted ink */
+    --dim:          #7a8170;
+    --faint:        #d6cdb8;
+    --accent:       #b8862c;            /* /hq amber, darkened for cream */
+    --accent-rgb:   184, 134, 44;
+    --holo:         59, 109, 82;        /* /hq phosphor, darkened for cream */
+    --listening:    160, 50, 88;        /* dusty rose for hot mic */
+    --err:          160, 52, 70;
+    --line-color:   var(--dim);
+    --grain:        rgba(21, 32, 26, 0.03);
+    --canvas-bg:    #f1ece0;
+    color-scheme:   light;
+  }
+
+  * { box-sizing: border-box; }
+  html, body {
+    margin: 0; padding: 0; height: 100%;
+    background: var(--bg); color: var(--fg);
+    font-family: 'JetBrains Mono', ui-monospace, "SF Mono", Menlo, monospace;
+    font-weight: 400;
+    -webkit-font-smoothing: antialiased;
+    overflow: hidden; touch-action: none;
+    -webkit-user-select: none; user-select: none;
+    transition: background-color 0.45s ease, color 0.45s ease;
+  }
+  ::selection { background: var(--accent); color: var(--bg); }
+
+  #stage { position: fixed; inset: 0; display: grid; place-items: center; }
+  #scene { display: block; background: var(--canvas-bg); }
+
+  /* ─── Landing-style chrome (corner ticks · meta · footer) ─────────
+     Always visible. Engineering chrome (toolbar/diag) is hidden by
+     default and revealed with U (chrome-hidden toggle). */
+
+  .corner {
+    position: fixed;
+    width: 14px; height: 14px;
+    border: 1px solid var(--dim);
+    z-index: 32;
+    pointer-events: none;
+    opacity: 0;
+    transition: opacity 0.45s ease 0.2s, border-color 0.45s ease;
+  }
+  body.booted .corner { opacity: 1; }
+  /* vh/vw positioning so the chrome stays anchored to the visual
+     corners regardless of browser zoom (50% / 100% / 200%). */
+  .corner.tl { top: 2.7vh; left: 1.7vw;     border-right: none; border-bottom: none; }
+  .corner.tr { top: 2.7vh; right: 1.7vw;    border-left:  none; border-bottom: none; }
+  .corner.bl { bottom: 2.7vh; left: 1.7vw;  border-right: none; border-top:    none; }
+  .corner.br { bottom: 2.7vh; right: 1.7vw; border-left:  none; border-top:    none; }
+
+  .meta-l, .meta-r, .footer-line {
+    position: fixed;
+    z-index: 32;
+    font-size: 10.5px;
+    letter-spacing: 0.28em;
+    text-transform: uppercase;
+    color: var(--dim);
+    opacity: 0;
+    transition: opacity 0.45s ease 0.3s, color 0.45s ease;
+  }
+  body.booted .meta-l,
+  body.booted .meta-r,
+  body.booted .footer-line { opacity: 1; }
+  .meta-l { top: 3.1vh; left: 3.9vw; display: flex; align-items: center; gap: 10px; }
+  .meta-l .glyph { color: var(--accent); font-size: 12px; line-height: 1; }
+  .meta-r { top: 3.1vh; right: 3.9vw; display: flex; gap: 22px; align-items: center; }
+  .meta-r a { color: inherit; text-decoration: none; transition: color 0.15s ease; }
+  .meta-r a:hover { color: var(--fg); }
+  .footer-line { bottom: 3.1vh; right: 3.9vw; pointer-events: none; }
+
+  /* the landing-style theme toggle, lives inside .meta-r */
+  .theme-toggle {
+    appearance: none;
+    background: transparent;
+    border: 1px solid var(--dim);
+    color: var(--dim);
+    padding: 5px 10px 5px 8px;
+    border-radius: 0;
+    font: inherit;
+    font-size: 10.5px;
+    letter-spacing: 0.28em;
+    text-transform: uppercase;
+    cursor: pointer;
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    line-height: 1;
+    transition: color .15s ease, border-color .15s ease;
+  }
+  .theme-toggle:hover { color: var(--fg); border-color: var(--fg); }
+  .theme-toggle .glyph { color: var(--accent); font-size: 12px; line-height: 1; }
+  :root[data-theme="dark"]  .theme-toggle .glyph::before { content: "☼"; }
+  :root[data-theme="dark"]  .theme-toggle .label::before { content: "light"; }
+  :root[data-theme="light"] .theme-toggle .glyph::before { content: "☾"; }
+  :root[data-theme="light"] .theme-toggle .label::before { content: "dark"; }
+
+  /* Hide the landing chrome whenever the user is in a physical-projector
+     mode (cyl4/cyl360) or has explicitly hidden chrome with U. The
+     hairlines would haze the cylinder optics; better invisible. */
+  body.chrome-hidden .corner,
+  body.chrome-hidden .meta-l,
+  body.chrome-hidden .meta-r,
+  body.chrome-hidden .footer-line,
+  body.mode-cyl4 .corner,
+  body.mode-cyl4 .meta-l,
+  body.mode-cyl4 .meta-r,
+  body.mode-cyl4 .footer-line,
+  body.mode-cyl360 .corner,
+  body.mode-cyl360 .meta-l,
+  body.mode-cyl360 .meta-r,
+  body.mode-cyl360 .footer-line { opacity: 0 !important; pointer-events: none !important; }
+
+  /* ─── status pill — single dot, top-left near corner tick.
+     vh/vw positioning so it tracks the corner across zoom levels. */
+  #status {
+    position: fixed; top: 5.6vh; left: 3.9vw; z-index: 31;
+    width: 6px; height: 6px; border-radius: 50%;
+    background: rgba(var(--holo), 0.9); opacity: 0;
+    box-shadow: 0 0 8px rgba(var(--holo), 0.65);
+    transition: opacity 0.2s ease, background 0.2s ease, box-shadow 0.2s ease;
+  }
+  body.rt-connecting #status { opacity: 0.5; }
+  body.rt-connected  #status { opacity: 0.7; }
+  body.rt-listening  #status {
+    opacity: 1;
+    background: rgba(var(--listening), 1);
+    box-shadow: 0 0 10px rgba(var(--listening), 0.7);
+    animation: pulse 1.2s ease-in-out infinite;
+  }
+  body.rt-error #status {
+    opacity: 1;
+    background: rgba(var(--err), 1);
+    box-shadow: 0 0 10px rgba(var(--err), 0.7);
+  }
+  @keyframes pulse { 0%,100% { transform: scale(1); } 50% { transform: scale(0.55); } }
+
+  /* ─── Diag tail — dev only, hidden until U toggles chrome ──────── */
+  #diag {
+    position: fixed; bottom: 5.6vh; left: 3.9vw; z-index: 30;
+    font-size: 10px; letter-spacing: 0.06em;
+    color: var(--dim);
+    pointer-events: none; max-width: 60ch;
+    white-space: pre-wrap;
+    opacity: 0;
+    transition: opacity 0.3s ease;
+  }
+  body.show-ui #diag { opacity: 0.7; }
+  #diag.err { color: rgba(var(--err), 1); opacity: 0.85; }
+
+  /* ─── Toolbar — dev / calibration controls. Hidden until show-dev ── */
+  #toolbar {
+    position: fixed; top: 6.2vh; right: 3.9vw; z-index: 31;
+    display: flex; gap: 6px; align-items: center;
+    padding: 6px 8px;
+    background: color-mix(in srgb, var(--bg) 78%, transparent);
+    border: 1px solid var(--faint);
+    border-radius: 4px;
+    font-size: 10px; letter-spacing: 0.18em; text-transform: uppercase;
+    opacity: 0; transition: opacity 0.3s ease;
+    pointer-events: none;
+    backdrop-filter: blur(6px);
+    -webkit-backdrop-filter: blur(6px);
+  }
+  body.show-ui #toolbar { opacity: 0.96; pointer-events: auto; }
+  body.chrome-hidden #toolbar,
+  body.chrome-hidden #diag { opacity: 0 !important; pointer-events: none !important; }
+  #toolbar button {
+    appearance: none;
+    background: transparent;
+    border: 1px solid var(--faint);
+    color: var(--dim);
+    font: inherit; font-size: 10px; letter-spacing: 0.18em; text-transform: uppercase;
+    padding: 5px 9px; cursor: pointer; border-radius: 2px;
+    transition: color .15s ease, border-color .15s ease, background .15s ease;
+  }
+  #toolbar button:hover { color: var(--fg); border-color: var(--dim); }
+  #toolbar button[aria-pressed="true"] {
+    background: color-mix(in srgb, var(--accent) 14%, transparent);
+    color: var(--accent);
+    border-color: var(--accent);
+  }
+  #toolbar .mode-group {
+    display: inline-flex; gap: 0;
+    border: 1px solid var(--faint);
+    border-radius: 2px; overflow: hidden;
+  }
+  #toolbar .mode-group button {
+    border: none; border-radius: 0;
+    border-right: 1px solid var(--faint);
+  }
+  #toolbar .mode-group button:last-child { border-right: none; }
+
+  /* ─── Calibration panel ──────────────────────────────────────────── */
+  #cal {
+    position: fixed; top: 11.4vh; right: 3.9vw; z-index: 31;
+    width: 264px;
+    padding: 14px 14px 10px;
+    background: color-mix(in srgb, var(--bg) 88%, transparent);
+    border: 1px solid var(--faint);
+    border-radius: 4px;
+    font-size: 10px; letter-spacing: 0.06em;
+    color: var(--fg);
+    backdrop-filter: blur(10px);
+    -webkit-backdrop-filter: blur(10px);
+  }
+  #cal[hidden] { display: none; }
+  #cal .row { margin: 7px 0; }
+  #cal .row label {
+    display: flex; justify-content: space-between;
+    font-size: 9.5px; letter-spacing: 0.22em; text-transform: uppercase;
+    color: var(--dim); margin-bottom: 3px;
+  }
+  #cal .row label .val {
+    font-family: 'JetBrains Mono', ui-monospace, monospace;
+    color: var(--fg); letter-spacing: 0.04em;
+  }
+  #cal input[type="range"] { width: 100%; accent-color: var(--accent); }
+  #cal .row-inline { display: flex; gap: 14px; flex-wrap: wrap; }
+  #cal .row-inline label {
+    flex: 0 0 auto; display: inline-flex; align-items: center;
+    gap: 5px; color: var(--fg); cursor: pointer;
+    font-size: 9.5px; letter-spacing: 0.22em; text-transform: uppercase;
+  }
+  #cal input[type="checkbox"] { accent-color: var(--accent); }
+  #cal [data-modes] { display: none; }
+  #cal[data-mode="flat"]   [data-modes~="flat"],
+  #cal[data-mode="split"]  [data-modes~="split"],
+  #cal[data-mode="cyl4"]   [data-modes~="cyl4"],
+  #cal[data-mode="cyl360"] [data-modes~="cyl360"] { display: block; }
+  #cal [data-modes].row-inline { display: none; }
+  #cal[data-mode="flat"]   [data-modes~="flat"].row-inline,
+  #cal[data-mode="split"]  [data-modes~="split"].row-inline,
+  #cal[data-mode="cyl4"]   [data-modes~="cyl4"].row-inline,
+  #cal[data-mode="cyl360"] [data-modes~="cyl360"].row-inline { display: flex; }
+  #cal .mode-note {
+    margin: 0 0 10px; padding: 7px 9px;
+    background: color-mix(in srgb, var(--accent) 6%, transparent);
+    border: 1px solid color-mix(in srgb, var(--accent) 22%, transparent);
+    border-radius: 2px;
+    font-size: 9px; letter-spacing: 0.06em;
+    color: var(--fg); opacity: 0.85;
+    line-height: 1.55;
+    text-transform: none;
+  }
+  #cal .actions {
+    display: flex; justify-content: flex-end;
+    gap: 6px; margin-top: 10px;
+  }
+  #cal button {
+    appearance: none;
+    background: transparent;
+    border: 1px solid var(--dim);
+    color: var(--fg); font: inherit;
+    font-size: 10px; letter-spacing: 0.22em; text-transform: uppercase;
+    padding: 5px 9px; cursor: pointer; border-radius: 2px;
+    transition: color .15s ease, border-color .15s ease, background .15s ease;
+  }
+  #cal button:hover { border-color: var(--accent); color: var(--accent); }
+  #cal button.primary {
+    background: var(--accent); color: var(--bg); border-color: var(--accent);
+  }
+  #cal button.primary:hover { filter: brightness(1.08); color: var(--bg); }
+  #cal button.saved {
+    background: rgba(var(--holo), 0.85); color: var(--bg); border-color: rgba(var(--holo), 0.85);
+  }
+  #cal .row-save button { width: 100%; padding: 7px 10px; font-size: 10px; }
+  #cal .hint {
+    margin: 10px 0 0;
+    font-size: 9px;
+    opacity: 0.5;
+    line-height: 1.6;
+    letter-spacing: 0.04em;
+    color: var(--dim);
+    text-transform: none;
+  }
+
+  /* ─── 360° test overlay — split-view chrome for flat-monitor 360 ─── */
+  #test360-overlay {
+    position: fixed; inset: 0; z-index: 20;
+    pointer-events: none; display: none;
+  }
+  body.test360 #test360-overlay { display: block; }
+  body.mirror { transform: scaleY(-1); transform-origin: 50% 50%; }
+
+  #test360-overlay .divider {
+    position: absolute; top: 8%; bottom: 8%; left: 50%;
+    width: 1px; transform: translateX(-0.5px);
+    background: linear-gradient(
+      to bottom,
+      rgba(var(--holo), 0) 0%,
+      rgba(var(--holo), 0.35) 20%,
+      rgba(var(--holo), 0.35) 80%,
+      rgba(var(--holo), 0) 100%
+    );
+  }
+  #test360-overlay .tick {
+    position: absolute; left: 50%; width: 10px; height: 1px;
+    background: rgba(var(--holo), 0.45); transform: translateX(-5px);
+  }
+  #test360-overlay .tick.top { top: 8%; }
+  #test360-overlay .tick.bot { bottom: 8%; }
+  #test360-overlay .lbl {
+    position: absolute; top: 12px;
+    font: 10px/1 'JetBrains Mono', monospace; letter-spacing: 0.28em;
+    color: var(--dim); opacity: 0.7;
+  }
+  #test360-overlay .lbl.front { left: 14px; }
+  #test360-overlay .lbl.back  { right: 14px; }
+  #test360-overlay .horoscope {
+    position: absolute; left: 50%; top: 50%;
+    width: 56vmin; height: 56vmin;
+    transform: translate(-50%, -50%);
+    border: 1px solid rgba(var(--holo), 0.4);
+    border-radius: 50%;
+    box-shadow:
+      0 0 24px rgba(var(--holo), 0.16),
+      inset 0 0 18px rgba(var(--holo), 0.12);
+  }
+  #test360-overlay .horoscope::before,
+  #test360-overlay .horoscope::after {
+    content: ''; position: absolute; inset: 4%;
+    border: 1px dashed rgba(var(--holo), 0.18);
+    border-radius: 50%;
+  }
+  #test360-overlay .horoscope::after { inset: 10%; border-style: solid; opacity: 0.55; }
+  #test360-overlay .zodiac { position: absolute; inset: 0; pointer-events: none; }
+  #test360-overlay .zodiac .tk {
+    position: absolute; left: 50%; top: 0;
+    width: 1px; height: 10px;
+    background: rgba(var(--holo), 0.55);
+    transform-origin: 50% 28vmin;
+  }
+  #test360-overlay .meta {
+    position: absolute; left: 50%; top: 50%;
+    transform: translate(-50%, -50%);
+    font: 9px/1 'JetBrains Mono', monospace; letter-spacing: 0.28em;
+    color: var(--dim); opacity: 0.7;
+  }
+
+  /* ─── Boot splash ────────────────────────────────────────────────
+     Themed cream/black with a single breathing orb. Holds until the
+     first model audio confirms the round-trip. */
+  #boot-splash {
+    position: fixed; inset: 0; z-index: 50;
+    display: grid; place-items: center;
+    background: var(--bg);
+    color: var(--fg);
+    opacity: 1;
+    transition: opacity 1.4s ease;
+    pointer-events: auto;
+  }
+  /* faint grid wash for light mode — same phosphor lattice the /landing
+     stage uses, masked to fade top + bottom. Invisible in dark since the
+     holo overlay would haze the cylinder optics. */
+  :root[data-theme="light"] #boot-splash::before {
+    content: "";
+    position: absolute; inset: 0;
+    background:
+      linear-gradient(rgba(var(--holo), 0.06) 1px, transparent 1px) 0 0 / 100% 48px,
+      linear-gradient(90deg, rgba(var(--holo), 0.06) 1px, transparent 1px) 0 0 / 48px 100%;
+    -webkit-mask-image: linear-gradient(180deg, transparent 0%, black 30%, black 70%, transparent 100%);
+            mask-image: linear-gradient(180deg, transparent 0%, black 30%, black 70%, transparent 100%);
+    pointer-events: none;
+  }
+  #boot-splash.ready { opacity: 0; pointer-events: none; }
+  #boot-splash .orb {
+    width: 10px; height: 10px;
+    border-radius: 50%;
+    background: rgba(var(--holo), 1);
+    box-shadow: 0 0 28px 2px rgba(var(--holo), 0.7);
+    animation: boot-orb 2.4s ease-in-out infinite;
+    z-index: 1;
+  }
+  @keyframes boot-orb {
+    0%, 100% { opacity: 0.35; transform: scale(0.85); }
+    50%      { opacity: 1;    transform: scale(1.15); }
+  }
+  #boot-splash.err .orb {
+    background: rgba(var(--err), 1);
+    box-shadow: 0 0 28px 2px rgba(var(--err), 0.7);
+  }
+
+  /* ─── Greeting card — terminal-styled, paper-friendly ───────────── */
+  #greeting-card {
+    position: fixed; left: 50%; bottom: 9vh;
+    transform: translateX(-50%) translateY(10px);
+    z-index: 40;
+    width: min(560px, calc(100vw - 8vw));
+    padding: 18px 22px 16px;
+    background: color-mix(in srgb, var(--bg) 82%, transparent);
+    border: 1px solid color-mix(in srgb, var(--accent) 30%, var(--faint));
+    border-radius: 4px;
+    box-shadow:
+      0 0 32px rgba(var(--accent-rgb), 0.10),
+      0 0 80px rgba(var(--accent-rgb), 0.04);
+    font: 13.5px/1.6 'JetBrains Mono', monospace;
+    letter-spacing: 0.01em;
+    color: var(--fg);
+    opacity: 0;
+    pointer-events: none;
+    transition: opacity 0.9s ease, transform 0.9s ease;
+    backdrop-filter: blur(8px);
+    -webkit-backdrop-filter: blur(8px);
+  }
+  #greeting-card.show {
+    opacity: 1;
+    transform: translateX(-50%) translateY(0);
+  }
+  #greeting-card::before {
+    content: "> ";
+    color: var(--dim);
+  }
+  #greeting-card .label {
+    display: block;
+    font-size: 9.5px;
+    letter-spacing: 0.32em;
+    color: var(--accent);
+    margin-bottom: 8px;
+    text-transform: uppercase;
+  }
+  #greeting-card em {
+    font-style: normal;
+    color: var(--accent);
+    letter-spacing: 0.08em;
+  }
+  /* sweeping hairline under the greeting card, mirrors the landing's
+     accent sweep under the active holo-card */
+  #greeting-card.show::after {
+    content: "";
+    position: absolute;
+    left: 12%; right: 12%; bottom: 0;
+    height: 1px;
+    background: linear-gradient(90deg,
+      transparent,
+      rgba(var(--accent-rgb), 0.75),
+      transparent);
+    filter: drop-shadow(0 0 4px rgba(var(--accent-rgb), 0.6));
+    animation: accent-sweep 3.6s ease-in-out infinite;
+  }
+  @keyframes accent-sweep {
+    0%, 100% { opacity: 0.55; transform: scaleX(0.85); }
+    50%      { opacity: 1;    transform: scaleX(1);    }
+  }
+
+  /* horizon hairline along the bottom of the stage (landing-style),
+     visible in flat mode only — would haze the cylinder optics */
+  body.mode-flat::after,
+  body.mode-split::after {
+    content: "";
+    position: fixed;
+    left: 0; right: 0; bottom: 0;
+    height: 1px;
+    z-index: 5;
+    pointer-events: none;
+    background: linear-gradient(90deg,
+      transparent 0%,
+      rgba(var(--holo), 0.30) 20%,
+      rgba(var(--accent-rgb), 0.40) 50%,
+      rgba(var(--holo), 0.30) 80%,
+      transparent 100%);
+    box-shadow:
+      0 -4px 24px rgba(var(--holo), 0.12),
+      0 -1px 4px rgba(var(--accent-rgb), 0.18);
+    opacity: 0;
+    animation: horizon-rise 1.4s ease forwards;
+    animation-delay: 0.4s;
+  }
+  body.chrome-hidden::after { display: none !important; }
+  @keyframes horizon-rise { to { opacity: 1; } }
+
+  /* tighten the landing chrome on narrow viewports — vh/vw already keep
+     it proportional with browser zoom, so we only adjust font size and
+     drop the secondary nav links here. */
+  @media (max-width: 640px) {
+    .meta-l, .meta-r, .footer-line { font-size: 9.5px; }
+    .meta-r { gap: 14px; }
+    .meta-r a:not(:last-child) { display: none; }
+  }
+</style>
+
+<script type="importmap">
+{
+  "imports": {
+    "three": "https://unpkg.com/three@0.160.0/build/three.module.js",
+    "three/addons/": "https://unpkg.com/three@0.160.0/examples/jsm/"
+  }
+}
+</script>
+</head>
+<body class="mode-flat">
+
+<!-- ─── Landing-style chrome (shared visual language with /landing) ──
+     Corner ticks at every screen corner, tiny letter-spaced meta text
+     top-left and top-right, footer hairline bottom-right. The theme
+     toggle lives in meta-r and is kept in sync with /landing via
+     localStorage. Hidden in cylinder warp modes (cyl4/cyl360) since
+     the optics need pure-black pixels at the edges. -->
+<span class="corner tl"></span>
+<span class="corner tr"></span>
+<span class="corner bl"></span>
+<span class="corner br"></span>
+
+<div class="meta-l" hidden><span class="glyph">ω</span><span>holoscope · live</span></div>
+<div class="footer-line" hidden>a cofounder you can have a coffee with</div>
+
+<!-- Boot splash: paints on first frame, before Three.js / SDK / tokens
+     finish loading. A single breathing orb — holds until the mic round-
+     trip is confirmed (first model audio arrives) so the reveal is
+     synchronised with the app actually being usable. Themes with the
+     page: cream paper + faint phosphor grid in light, pure black in
+     dark (preserves the cylinder physical-projector flow). -->
+<div id="boot-splash" aria-live="polite">
+  <div class="orb"></div>
+</div>
+
+<script>
+  // ─── Theme toggle — kept in lock-step with /landing ─────────────────
+  // The initial theme attribute was already set by the inline <head>
+  // script (no FOUC). Here we wire the button to flip it, persist to
+  // the same `omo:landing:theme` key /landing uses, and dispatch a
+  // 'themechange' event that the WebGL clear-color watcher listens for.
+  (function () {
+    const btn = document.getElementById('theme-toggle');
+    if (!btn) return;
+    btn.addEventListener('click', () => {
+      const current = document.documentElement.getAttribute('data-theme') === 'light' ? 'light' : 'dark';
+      const next = current === 'dark' ? 'light' : 'dark';
+      document.documentElement.setAttribute('data-theme', next);
+      try { localStorage.setItem('omo:landing:theme', next); } catch (_) {}
+      window.dispatchEvent(new CustomEvent('themechange', { detail: { theme: next } }));
+    });
+    // Apply the .booted class once the inline pre-paint has settled so
+    // the corner ticks + meta nav fade in (slight delay, mirrors landing).
+    requestAnimationFrame(() => document.body.classList.add('booted'));
+  })();
+</script>
+
+<!-- Greeting card: mirrors the opening line Momo speaks on first LIVE. -->
+<div id="greeting-card" aria-hidden="true">
+  <span class="label">OMO</span>
+  Hi, I'm Omo. I'm connected to your business — ask me anything. Want a chart? Say so. Want me to open <em>HQ</em> for the dashboard, or <em>Squad</em> to see your AI team? Just ask.
+</div>
+
+<div id="status"></div>
+<div id="diag">boot…</div>
+
+<!-- Single HUD. Source selector + mode radios are hidden (only one source,
+     only one flat mode in this build) but kept in the DOM so existing
+     bindings don't break. Visible controls: BG · SAVE POS · CALIBRATE ·
+     TEST · FULLSCREEN. Keyboard shortcuts cover everything. -->
+<div id="toolbar">
+  <button id="btn-src-avatar" aria-pressed="true" hidden>AVATAR</button>
+  <button id="btn-bg" aria-pressed="false" title="Bare backdrop: black bg + dots, keeps pedestal rings (B)" data-i18n hidden>BG</button>
+  <button id="btn-save-pos" title="Save current position + zoom as the default on reload (S)" data-i18n hidden>SAVE POS</button>
+  <button id="btn-cal" aria-pressed="false" title="Open calibration panel (C)" data-i18n hidden>CALIBRATE</button>
+  <button id="btn-test" aria-pressed="false" title="Toggle polar test pattern (T)" data-i18n hidden>TEST</button>
+  <button id="btn-fs" title="Fullscreen (F)" data-i18n hidden>FULLSCREEN</button>
+</div>
+
+<!-- Hidden inputs for video source. The <video> element is never attached
+     to the DOM tree for display — it only feeds a THREE.VideoTexture. -->
+<input id="file-video" type="file" accept="video/*" hidden>
+<video id="video-el" playsinline muted crossorigin="anonymous" style="display:none"></video>
+
+<aside id="cal" hidden data-mode="cyl4">
+  <p class="mode-note" id="cal-note">—</p>
+
+  <div class="row" data-modes="cyl4 cyl360"><label>CENTER X <span class="val" id="v-cx">0.500</span></label>
+    <input id="s-cx" type="range" min="0" max="1" step="0.001"></div>
+  <div class="row" data-modes="cyl4 cyl360"><label>CENTER Y <span class="val" id="v-cy">0.500</span></label>
+    <input id="s-cy" type="range" min="0" max="1" step="0.001"></div>
+  <div class="row" data-modes="cyl4 cyl360"><label>INNER R <span class="val" id="v-rmin">0.050</span></label>
+    <input id="s-rmin" type="range" min="0" max="0.8" step="0.001"></div>
+  <div class="row" data-modes="cyl4 cyl360"><label>OUTER R <span class="val" id="v-rmax">0.400</span></label>
+    <input id="s-rmax" type="range" min="0.01" max="1.2" step="0.001"></div>
+  <div class="row" data-modes="cyl4 cyl360"><label>ARC CENTER ° <span class="val" id="v-tc">-90</span></label>
+    <input id="s-tc" type="range" min="-180" max="180" step="0.5"></div>
+  <div class="row" data-modes="cyl4"><label>ARC SPAN ° <span class="val" id="v-ts">160</span></label>
+    <input id="s-ts" type="range" min="1" max="360" step="0.5"></div>
+
+  <div class="row row-inline" data-modes="cyl4 cyl360">
+    <label><input id="s-fx" type="checkbox"> FLIP X</label>
+    <label><input id="s-fy" type="checkbox"> FLIP Y</label>
+  </div>
+  <div class="row row-inline" data-modes="cyl4">
+    <label><input id="s-fd" type="checkbox"> REV FACES</label>
+  </div>
+  <div class="row row-inline" data-modes="split">
+    <label><input id="s-rs" type="checkbox"> ROTATE SIDES 90°</label>
+  </div>
+  <div class="row row-save" data-modes="split">
+    <button id="s-rs-save" class="primary" title="Persist this mode + rotation as the default on reload" data-i18n>SAVE AS DEFAULT</button>
+  </div>
+
+  <div class="actions">
+    <button id="cal-reset" data-i18n>RESET</button>
+    <button id="cal-save" class="primary" data-i18n>SAVE</button>
+  </div>
+  <p class="hint">
+    1/2/3/4 mode · C calibrate · T test · R rotate sides (split) · F fullscreen · S save pos · U hide chrome · arrows nudge center
+  </p>
+</aside>
+
+<div id="stage">
+  <canvas id="scene"></canvas>
+</div>
+
+<!-- Shown only when body.test360 — split-view chrome for flat-monitor 360.
+     The two halves share the stage but see the avatar from z=+R and z=-R,
+     so together they read as "our friend, front and back". -->
+<div id="test360-overlay">
+  <div class="divider"></div>
+  <div class="tick top"></div>
+  <div class="tick bot"></div>
+  <div class="lbl front">FRONT · 0°</div>
+  <div class="lbl back">BACK · 180°</div>
+  <!-- Circular placeholder for the horoscope ring. Twelve tick marks are
+       injected by the boot script so the 30° zodiac spacing is visible
+       even before the real wheel content is wired up. -->
+  <div class="horoscope">
+    <div class="zodiac" id="zodiac-ticks"></div>
+  </div>
+  <div class="meta">OMO · 360° PREVIEW</div>
+</div>
+
+<script type="module">
+  // ─── Diagnostics ─────────────────────────────────────────────────────
+  const diagEl = document.getElementById('diag');
+  const diagLines = [];
+  function diag(msg, isErr) {
+    diagLines.push(msg);
+    if (diagLines.length > 6) diagLines.shift();
+    diagEl.textContent = diagLines.join('  ·  ');
+    diagEl.classList.toggle('err', !!isErr);
+    console.log('[cylinder]', msg);
+  }
+  window.addEventListener('error', (e) => diag('JS ERR: ' + (e.message || e.error), true));
+  window.addEventListener('unhandledrejection', (e) => diag('PROMISE ERR: ' + (e.reason?.message || e.reason), true));
+  diag('boot');
+
+  // Freeze detector. Schedules a 200ms tick on a setInterval; if a tick
+  // ever lands more than 800ms late, the JS thread was blocked for that
+  // long. This is the only way to diagnose freezes that aren't visible
+  // in the dev console (the console pauses too). When a stall is
+  // detected, we log enough context to correlate with whatever the
+  // server saw during that window.
+  //
+  // Hidden tabs: Chrome clamps setInterval to ≥1000ms in background tabs,
+  // which would produce a perpetual 800ms "stall" — pure false positive.
+  // Skip detection while hidden, and reset the baseline on visibility
+  // change so the first foreground tick doesn't fire a spurious warning.
+  (() => {
+    const TICK_MS = 200;
+    const STALL_THRESHOLD_MS = 800;
+    let lastTick = performance.now();
+    let stallStreak = 0;
+    setInterval(() => {
+      const now = performance.now();
+      const drift = now - lastTick - TICK_MS;
+      lastTick = now;
+      if (document.hidden) { stallStreak = 0; return; }
+      if (drift > STALL_THRESHOLD_MS) {
+        // Don't spam if we keep stalling; collapse runs.
+        stallStreak += 1;
+        const tag = stallStreak > 1 ? ` (#${stallStreak})` : '';
+        diag(`STALL ${Math.round(drift)}ms${tag}`, true);
+        console.warn(`[cylinder] main-thread stall ${Math.round(drift)}ms · panes=${document.querySelectorAll('.holo-pane').length} · charts=${document.querySelectorAll('.chart-iframe').length}`);
+      } else {
+        stallStreak = 0;
+      }
+    }, TICK_MS);
+    document.addEventListener('visibilitychange', () => {
+      if (!document.hidden) lastTick = performance.now();
+    });
+  })();
+
+  // Cylinder heartbeat — once every 30s, print a one-line state snapshot
+  // through diag() (which forwards to the server log via /log). If the
+  // tab freezes or the cylinder's WS to /log dies, the cadence stops —
+  // server-side log silence becomes the signal of a client problem.
+  // Includes audio context state so we can spot suspended-but-not-resumed
+  // cases that explain "Momo went silent" without a visible crash.
+  setInterval(() => {
+    try {
+      const ws = (typeof liveSession !== 'undefined' && liveSession) ? 'live' : 'down';
+      const panes  = document.querySelectorAll('.holo-pane').length;
+      const charts = document.querySelectorAll('.chart-iframe').length;
+      const playState = (typeof playCtx !== 'undefined' && playCtx) ? playCtx.state : 'none';
+      const micState  = (typeof micCtx  !== 'undefined' && micCtx)  ? micCtx.state  : 'none';
+      const queued = (typeof playingSources !== 'undefined' && Array.isArray(playingSources)) ? playingSources.length : 0;
+      diag(`♥ ws=${ws} audio=play:${playState}/mic:${micState} panes=${panes} charts=${charts} q=${queued}`);
+    } catch (err) { /* never throw from heartbeat */ }
+  }, 30_000);
+
+  // ─── Boot splash controller ─────────────────────────────────────────
+  // Single-orb splash. It paints on first frame and holds until the mic
+  // round-trip is confirmed. No log tail, no phase labels — just a
+  // breathing orb that fades when we're truly ready.
+  const bootSplash = document.getElementById('boot-splash');
+  const greetingCard = document.getElementById('greeting-card');
+  let bootDismissed = false;
+  function dismissBootSplash() {
+    if (bootDismissed || !bootSplash) return;
+    bootDismissed = true;
+    bootSplash.classList.add('ready');
+    // Remove from DOM after the CSS fade finishes so it can't intercept
+    // pointer events or soak any layout/paint work on subsequent frames.
+    setTimeout(() => { bootSplash.remove(); }, 1400);
+  }
+  function bootErrorState(msg) {
+    if (!bootSplash || bootDismissed) return;
+    bootSplash.classList.add('err');
+    if (msg) diag(msg, true);
+  }
+  function showGreetingCard() {
+    if (!greetingCard) return;
+    // Replace the static placeholder text in the card with the greeting
+    // that was actually picked this session, so the card and the voice
+    // are in sync.
+    const label = greetingCard.querySelector('.label');
+    greetingCard.textContent = '';
+    if (label) greetingCard.appendChild(label);
+    greetingCard.appendChild(document.createTextNode(' ' + OMO_OPENING_GREETING));
+    greetingCard.classList.add('show');
+    greetingCard.setAttribute('aria-hidden', 'false');
+    // Hold long enough to read along with the spoken greeting, then fade.
+    setTimeout(() => {
+      greetingCard.classList.remove('show');
+      greetingCard.setAttribute('aria-hidden', 'true');
+    }, 14000);
+  }
+
+  // Reveal the app only once Gemini sends `setupComplete` — that's the
+  // real "session is ready to chat" signal. `ai.live.connect()` resolving
+  // (our `LIVE` log line) just means the WS opened; Gemini can still
+  // hang for 5-10s afterwards without ever completing setup, and the
+  // session is unusable during that window. Gating on setupComplete
+  // means the splash only disappears when the user can actually talk.
+  //
+  // A 4s watchdog force-closes the WS if setupComplete doesn't arrive,
+  // collapsing a dead session's silent-hang time from ~8s down to 4s
+  // so the reconnect loop converges on a working attempt in ~10-15s
+  // tops instead of the 30-60s we were seeing before.
+  let appRevealed = false;
+  let setupCompleteTimer = null;
+  const SETUP_COMPLETE_WAIT_MS = 4000;
+  function revealAppOnLive(reason) {
+    if (appRevealed) return;
+    appRevealed = true;
+    diag('ready · ' + (reason || 'live'));
+    dismissBootSplash();
+    showGreetingCard();
+  }
+  function armSetupCompleteWatchdog() {
+    if (setupCompleteTimer) return;
+    setupCompleteTimer = setTimeout(() => {
+      setupCompleteTimer = null;
+      if (appRevealed || !connected) return;
+      diag('setup stalled · forcing reconnect', true);
+      try { liveSession?.close(); } catch {} // triggers onclose → teardown → scheduleReconnect
+    }, SETUP_COMPLETE_WAIT_MS);
+  }
+  function cancelSetupCompleteWatchdog() {
+    if (setupCompleteTimer) { clearTimeout(setupCompleteTimer); setupCompleteTimer = null; }
+  }
+
+  // Momo picks one of these at connect time and speaks it on first LIVE;
+  // the greeting card mirrors the same text. Keep each under ~280 chars.
+  // Simplified Chinese — matches the default conversational language
+  // so the opener sounds native the moment you boot up.
+  const OMO_GREETINGS = [
+    "omo 来啦~ 今天想聊点啥？",
+    "嗨嗨~ 我是 omo，你说，我听着~",
+    "诶~ 我在呢，随时开工！",
+    "啵~ omo 上线！",
+    "老板早上好~ 今天咱们搞点啥？",
+    "嘿嘿~ 数据都帮你备好啦，随便问~",
+    "omo 报到~ 你不在的时候我偷偷看了眼你的仪表盘哦~",
+    "嗨~ 我是 omo。Stripe、广告、邮件我都看得见，你说一句我就去翻~",
+    "我是 omo~ 图表随叫随到，重活交给小特工，我负责讲给你听。想知道啥？",
+    "嗨~ 我是 omo，你的小助理。你接的那些 API 我都熟~ 想看图我就画，想跑活儿就派浏览器小特工，你还能看着她们干活哦~",
+  ];
+  const OMO_OPENING_GREETING = OMO_GREETINGS[Math.floor(Math.random() * OMO_GREETINGS.length)];
+
+  // Twelve 30° tick marks around the horoscope ring — visual scaffold for
+  // the zodiac wheel until the real content ships.
+  (() => {
+    const host = document.getElementById('zodiac-ticks');
+    if (!host) return;
+    for (let i = 0; i < 12; i++) {
+      const tk = document.createElement('div');
+      tk.className = 'tk';
+      tk.style.transform = `translateX(-0.5px) rotate(${i * 30}deg)`;
+      host.appendChild(tk);
+    }
+  })();
+
+  // Key bindings — set before init so space/tap works even if imports fail.
+  // /voice-mode.js owns SPACE in 'ptt' / 'off' modes (PTT push-to-talk +
+  // muted swallow) and the M-key cycle. This handler only runs when SPACE
+  // bubbles past — i.e. mode === 'on' — and acts like the legacy
+  // "press space to (re)connect" affordance.
+  let connectHandler = () => diag('press ignored (init still loading)');
+  window.addEventListener('keydown', (e) => {
+    if (e.code !== 'Space' || e.repeat) return;
+    if (e.target instanceof HTMLInputElement) return;
+    if (window.omoVoiceMode && window.omoVoiceMode.current !== 'on') return;
+    e.preventDefault();
+    connectHandler();
+  }, { capture: true });
+
+  let THREE, EffectComposer, RenderPass, UnrealBloomPass, ShaderPass;
+  let createAvatar, updateAvatar, createHologramScene;
+  try {
+    THREE = await import('three');
+    ({ EffectComposer } = await import('three/addons/postprocessing/EffectComposer.js'));
+    ({ RenderPass } = await import('three/addons/postprocessing/RenderPass.js'));
+    ({ UnrealBloomPass } = await import('three/addons/postprocessing/UnrealBloomPass.js'));
+    ({ ShaderPass } = await import('three/addons/postprocessing/ShaderPass.js'));
+    ({ createAvatar, updateAvatar, createHologramScene } = await import('./avatar.js'));
+    diag('three loaded');
+  } catch (err) {
+    diag('import failed: ' + err.message, true);
+    throw err;
+  }
+
+  // ─── Polar anamorphic warp shader ───────────────────────────────────
+  // For every output pixel, compute its polar coords (r, θ) about a
+  // configurable center, then sample the source texture at
+  //   u = (θ - θcenter) / θspan + 0.5
+  //   v = (r - rMin) / (rMax - rMin)
+  // Pixels outside the annular sector are black. Flips handle the
+  // cylinder's orientation, and a 4-face mode repeats the image every
+  // 90° for cylinders meant to be viewed from all around.
+  //
+  // The source texture is square (rendered at renderTargetSize × same);
+  // the warp shader fits it onto whatever screen aspect is in use.
+  // A uniform test-pattern flag lets us render a calibration card in
+  // source space without touching the avatar scene.
+  const warpShader = {
+    uniforms: {
+      tDiffuse:     { value: null },
+      uPano:        { value: null },
+      // 4-strip texture: front | right | back | left, each occupying 1/4 of
+      // the texture width. In 4-face mode the warp samples from this instead
+      // of tDiffuse so each cylinder face shows its own avatar view.
+      uFacesTex:    { value: null },
+      uFacesTexW:   { value: 4 * 512 },
+      uResolution:  { value: new THREE.Vector2(1, 1) },
+      uCenter:      { value: new THREE.Vector2(0.5, 0.5) },
+      uRMin:        { value: 0.05 },
+      uRMax:        { value: 0.4 },
+      uThetaCenter: { value: -Math.PI / 2 },
+      uThetaSpan:   { value: (160 * Math.PI) / 180 },
+      uFlipX:       { value: 0 },
+      uFlipY:       { value: 1 },
+      uFaces:       { value: 1 },
+      // Direction the per-face strips advance as you walk around the
+      // cylinder. +1 = CW from above, -1 = CCW. Flip if the avatar appears
+      // to turn the wrong way as you circle the rig.
+      uFaceDir:     { value: 1 },
+      uTest:        { value: 0 },
+      u360:         { value: 0 },
+    },
+    vertexShader: `
+      varying vec2 vUv;
+      void main() {
+        vUv = uv;
+        gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+      }
+    `,
+    fragmentShader: `
+      precision highp float;
+      varying vec2 vUv;
+      uniform sampler2D tDiffuse;
+      uniform sampler2D uPano;
+      uniform sampler2D uFacesTex;
+      uniform float uFacesTexW;
+      uniform vec2  uResolution;
+      uniform vec2  uCenter;
+      uniform float uRMin;
+      uniform float uRMax;
+      uniform float uThetaCenter;
+      uniform float uThetaSpan;
+      uniform float uFlipX;
+      uniform float uFlipY;
+      uniform float uFaces;
+      uniform float uFaceDir;
+      uniform float uTest;
+      uniform float u360;
+
+      #define PI 3.14159265359
+
+      vec3 testCard(vec2 uv) {
+        // 8×8 grid with labeled cells and directional arrows so the user
+        // can see exactly which source pixel went where on the cylinder.
+        vec2 g = uv * 8.0;
+        vec2 cell = fract(g);
+        float gridLine = 0.0;
+        if (cell.x < 0.012 || cell.x > 0.988) gridLine = 1.0;
+        if (cell.y < 0.012 || cell.y > 0.988) gridLine = 1.0;
+
+        // central square marker
+        vec2 d = abs(uv - 0.5);
+        float sq = (max(d.x, d.y) > 0.22 && max(d.x, d.y) < 0.23) ? 1.0 : 0.0;
+
+        // top/bottom bands for orientation cue
+        float top = (1.0 - smoothstep(0.00, 0.04, uv.y)) * 0.9;  // v=0 edge
+        float bot = smoothstep(0.96, 1.00, uv.y) * 0.9;          // v=1 edge
+
+        vec3 grid = vec3(0.0, 0.9, 1.0) * gridLine * 0.7;
+        vec3 sqc  = vec3(1.0, 0.4, 0.7) * sq;
+        vec3 topc = vec3(0.0, 0.9, 1.0) * top;
+        vec3 botc = vec3(1.0, 0.4, 0.7) * bot;
+        return grid + sqc + topc + botc;
+      }
+
+      void main() {
+        // Isotropic polar coords — normalize by min(width,height) so a
+        // radius of 0.5 reaches the nearer edge whatever the aspect.
+        float scale = min(uResolution.x, uResolution.y);
+        vec2 p = (vUv - uCenter) * uResolution / scale;
+        float r = length(p);
+        float theta = atan(p.y, p.x);
+
+        float tc = uThetaCenter;
+        float span = uThetaSpan;
+        float halfSpan = span * 0.5;
+
+        // 4-face mode — continuous 4-keyframe panorama. Ring-theta maps
+        // 1:1 to world-azimuth (anchored by uThetaCenter at face 0), so
+        // each cylinder column shows the avatar from that column's own
+        // viewing angle instead of showing one camera's flat render
+        // smeared across a 90° sector. The 4 strips of uFacesTex are
+        // rendered at 90° horizontal FOV each; within a strip we sample
+        // via tangent projection to match the camera's perspective, so
+        // the 4 strips tile 360° seamlessly. A viewer standing in front
+        // of the cylinder now sees the front view in the centre and the
+        // adjacent azimuths continuously on the sides — the 3D avatar
+        // illusion — instead of three disjoint flat billboards with the
+        // side cameras' eyes pinned next to the forward view.
+        // uThetaSpan is repurposed as a per-face angular mask: values
+        // < 90° carve black gaps between faces; >= 90° gives a seamless
+        // panorama. uFaceDir flips walk-around direction.
+        if (uFaces > 2.5 && uTest < 0.5) {
+          if (r < uRMin || r > uRMax) {
+            gl_FragColor = vec4(0.0, 0.0, 0.0, 1.0);
+            return;
+          }
+          float delta = (theta - uThetaCenter) * uFaceDir;
+          delta = delta - 2.0 * PI * floor(delta / (2.0 * PI));
+          float stripIdx = delta / (PI * 0.5);
+          float strip = floor(stripIdx);
+          float frac = stripIdx - strip;
+          float localAngle = (frac - 0.5) * (PI * 0.5);
+          if (abs(localAngle) > halfSpan) {
+            gl_FragColor = vec4(0.0, 0.0, 0.0, 1.0);
+            return;
+          }
+          float fu = 0.5 + 0.5 * tan(localAngle);
+          float fv = (r - uRMin) / (uRMax - uRMin);
+          if (uFlipX > 0.5) fu = 1.0 - fu;
+          if (uFlipY > 0.5) fv = 1.0 - fv;
+          float pad = 0.5 / uFacesTexW;
+          float stripU = (strip + clamp(fu, pad * 4.0, 1.0 - pad * 4.0)) * 0.25;
+          gl_FragColor = vec4(texture2D(uFacesTex, vec2(stripU, fv)).rgb, 1.0);
+          return;
+        }
+
+        float dtheta = theta - tc;
+        dtheta = mod(dtheta + PI, 2.0 * PI) - PI;
+
+        // 360° panoramic mode: the annular ring is the full cylinder face.
+        // U is wrapped from the absolute θ (not dtheta) so the panorama
+        // seam lands at the back of the cylinder. uThetaCenter rotates the
+        // whole panorama, so the viewer's "front" aligns with the avatar's
+        // front regardless of how the cylinder was placed on the screen.
+        if (u360 > 0.5 && uTest < 0.5) {
+          if (r < uRMin || r > uRMax) {
+            gl_FragColor = vec4(0.0, 0.0, 0.0, 1.0);
+            return;
+          }
+          float pu = (theta - uThetaCenter) / (2.0 * PI);
+          pu = pu - floor(pu);
+          float pv = (r - uRMin) / (uRMax - uRMin);
+          if (uFlipX > 0.5) pu = 1.0 - pu;
+          if (uFlipY > 0.5) pv = 1.0 - pv;
+          // Sample the panorama as one continuous strip. This works
+          // because each strip's hFOV is set (JS side) to exactly match
+          // 360°/N — so strip i's right edge and strip i+1's left edge
+          // see the same world azimuth. Linear filtering across the seam
+          // then absorbs the small perspective mismatch between views.
+          gl_FragColor = vec4(texture2D(uPano, vec2(pu, pv)).rgb, 1.0);
+          return;
+        }
+
+        if (r < uRMin || r > uRMax || abs(dtheta) > halfSpan) {
+          gl_FragColor = vec4(0.0, 0.0, 0.0, 1.0);
+          return;
+        }
+
+        float u = dtheta / span + 0.5;
+        float v = (r - uRMin) / (uRMax - uRMin);
+        if (uFlipX > 0.5) u = 1.0 - u;
+        if (uFlipY > 0.5) v = 1.0 - v;
+
+        vec3 col;
+        if (uTest > 0.5) {
+          col = testCard(vec2(u, v));
+        } else {
+          col = texture2D(tDiffuse, vec2(u, v)).rgb;
+        }
+        gl_FragColor = vec4(col, 1.0);
+      }
+    `,
+  };
+
+  // ─── Renderer / scene / composer ────────────────────────────────────
+  const canvas = document.getElementById('scene');
+  const renderer = new THREE.WebGLRenderer({ canvas, antialias: true, alpha: false });
+  renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+  renderer.toneMapping = THREE.ACESFilmicToneMapping;
+  renderer.toneMappingExposure = 1.35;
+
+  // Theme-aware clear color. In flat (avatar) mode, the WebGL canvas IS
+  // the page background and should match it — cream in light, black in
+  // dark. The cylinder warp modes (cyl4/cyl360) force black regardless,
+  // since any non-black pixel hazes the physical projector. The two
+  // render-target clears in renderFaces/renderPano are left at 0x000000
+  // for that reason.
+  function activeMode() {
+    const cls = document.body.classList;
+    if (cls.contains('mode-cyl4'))   return 'cyl4';
+    if (cls.contains('mode-cyl360')) return 'cyl360';
+    if (cls.contains('mode-split'))  return 'split';
+    return 'flat';
+  }
+  function applyClearForTheme() {
+    const mode = activeMode();
+    if (mode === 'cyl4' || mode === 'cyl360') {
+      renderer.setClearColor(0x000000, 1);
+      return;
+    }
+    const theme = document.documentElement.getAttribute('data-theme') || 'dark';
+    // Match the page --bg token. Light is the warm tan we tuned above.
+    renderer.setClearColor(theme === 'light' ? 0xf1ece0 : 0x000000, 1);
+  }
+  applyClearForTheme();
+  window.addEventListener('themechange', () => {
+    applyClearForTheme();
+    // Theme change can flip the scene's `bare` flag — rebuild so the
+    // nebula backdrop drops out (or comes back) immediately, no reload.
+    try { applyParams(); } catch (_) {}
+    // applyParams may early-return inside rebuildAvatarScene when `bare`
+    // didn't actually change. Always re-apply the scene background so
+    // cream / black takes effect even if the scene wasn't rebuilt.
+    try { applySceneBackgroundForTheme(); } catch (_) {}
+  });
+  // The mode-* body classes are written by the existing setMode() path
+  // (further down). Re-apply clear color whenever they change.
+  const _modeWatcher = new MutationObserver(applyClearForTheme);
+  _modeWatcher.observe(document.body, { attributes: true, attributeFilter: ['class'] });
+
+  // Scene: full cute holo stage (nebula, stars, pedestal, orbiting crystals)
+  // when warp is OFF — this is what the user sees on a flat monitor at
+  // /holo. When warp is ON a physical glass cylinder is on the screen and
+  // any non-black pixel hazes the projection, so rebuildAvatarScene(true)
+  // swaps in the minimal scene. The initial pick mirrors params.warp which
+  // is resolved just above from localStorage/URL.
+  let avatarScene, updateScene;
+  ({ scene: avatarScene, update: updateScene } = createHologramScene({ minimal: false, bare: false }));
+  const avatar = createAvatar();
+  // Object-level X-mirror so the avatar reads correctly under the
+  // reflector-friendly OFF/ON shader default. This replaces the old
+  // shader flipX=true and keeps the avatar's canvas aligned with panes
+  // and viz cards, which only need a Y flip. THREE handles the normal
+  // matrix correctly for negative scales.
+  avatar.scale.x = -1;
+  avatarScene.add(avatar);
+
+  // Eager-load the reactions module so __momoTest is available in the
+  // console immediately, and so the transcript→reaction listener is
+  // ready for the very first Gemini turn instead of attaching on demand.
+  import('./momo-reactions.js').then((mod) => {
+    try { momoReactions = mod.attachMomoReactions({ avatar, debug: true }); } catch {}
+  }).catch((err) => console.warn('momo-reactions eager load failed', err));
+  let currentMinimal = false;
+  let currentBare = false;
+
+  const { installChartLayer } = await import('./chart-layer.js');
+  // cylinder uses a pre-distorted polar warp pipeline that a DOM overlay can't participate in — charts surface on the flat composite above the warp, readable but not part of the projection.
+  installChartLayer({ avatarObj: avatar });
+
+  // Pane layer — full-stage iframe surface for /hq and /agents-grid.
+  // Lazy: no iframe exists until show_pane fires, so there's no page-load cost.
+  // Mirror is OFF here because body.mirror already applies scaleY(-1) to
+  // the whole page — charts, panes, and popups all inherit that single
+  // body flip. Adding pane-mirror-y on top would double-flip iframes and
+  // make them read upside-down through the reflector. M-key still cycles
+  // for live debugging.
+  const { installPaneLayer, forwardOpenDetail } = await import('./pane-layer.js');
+  installPaneLayer({
+    stageEl: document.getElementById('stage'),
+    mirror: { x: false, y: false },
+  });
+  // Expose the voice-driven "open this card" forwarder for the tool
+  // dispatcher below (open_hq_detail). Kept on window so it can be called
+  // from inline script blocks without re-importing.
+  window.__omoForwardOpenDetail = forwardOpenDetail;
+
+  // ── preview voice-nav: command-down WS + ack-up fetch ───────────────
+  // The holo opens a small WS to /omo/preview/ws that streams commands
+  // FROM server tools (interact_preview, etc.) into the /preview pane.
+  // Commands arrive as { type:'preview:cmd', id, command, ... }; we wrap
+  // them as the canonical omo.preview.cmd shape and forward via the
+  // pane-layer's postMessage forwarder. Acks from the bridge come back
+  // up via window.message (postMessage chain) and we POST them to
+  // /omo/preview/ack so the server-side tool's await resolves.
+  window.__omoPreviewEvents = window.__omoPreviewEvents || [];
+
+  function openPreviewBus() {
+    const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
+    const url = proto + '//' + location.host + '/omo/preview/ws';
+    let ws, backoff = 500;
+    function connect() {
+      try { ws = new WebSocket(url); }
+      catch (err) { try { diag('preview bus connect err: ' + (err?.message || err)); } catch {} ; schedule(); return; }
+      ws.addEventListener('open', () => { backoff = 500; });
+      ws.addEventListener('message', (e) => {
+        let m;
+        try { m = JSON.parse(e.data); } catch { return; }
+        if (!m || m.type === 'hello') return;
+        // Forward the command into whichever /preview pane is mounted.
+        // If none is open, forwardMessage returns false and the
+        // server-side ack will time out cleanly.
+        if (!window.__holoPane) return;
+        const forwarded = window.__holoPane.forwardMessage({
+          type: 'omo.preview.cmd',
+          id: m.id,
+          command: m.command,
+          ...m,
+        });
+        if (!forwarded) try { diag('preview cmd dropped (no pane open)'); } catch {}
+      });
+      ws.addEventListener('close', schedule);
+      ws.addEventListener('error', schedule);
+    }
+    let scheduled = false;
+    function schedule() {
+      if (scheduled) return;
+      scheduled = true;
+      setTimeout(() => { scheduled = false; backoff = Math.min(backoff * 2, 8000); connect(); }, backoff);
+    }
+    connect();
+  }
+  openPreviewBus();
+
+  // Bridge replies (ack / ready / nav) bubble up via postMessage. The
+  // ack carries the id we issued in the dispatch — POST it to the
+  // server so the awaiting tool resolves.
+  window.addEventListener('message', (e) => {
+    if (e.origin !== location.origin) return;
+    const m = e.data;
+    if (!m || typeof m !== 'object') return;
+    if (m.type === 'omo.preview.ready' || m.type === 'omo.preview.nav' || m.type === 'omo.preview.ack') {
+      window.__omoPreviewEvents.push({ ...m, at: Date.now() });
+      if (window.__omoPreviewEvents.length > 50) window.__omoPreviewEvents.shift();
+      try { diag(`preview ${m.type.replace('omo.preview.', '')}${m.ok === false ? ' err:' + m.error : ''}${m.url ? ' ' + m.url : ''}`); } catch {}
+      if (m.type === 'omo.preview.ack' && m.id) {
+        // Fire-and-forget: server resolves the pending Promise.
+        try {
+          fetch('/omo/preview/ack', {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify(m),
+          }).catch(() => {});
+        } catch {}
+      }
+    }
+  });
+
+  // Square perspective camera — the source rectangle is square, the warp
+  // stretches it into the annular sector according to θspan and Δr.
+  // The avatar (head ~y=1.5, pedestal ~y=-2.6) has its visual weight
+  // below origin, so lookAt(0,0,0) renders it bottom-heavy on screen.
+  // Target a lower y so the head/torso land around screen center and the
+  // pedestal drops below — keeps the avatar seated inside the horoscope
+  // ring instead of crowding the bottom edge.
+  const FRAMING_TARGET_Y = -0.6;
+  const camera = new THREE.PerspectiveCamera(36, 1, 0.1, 100);
+  camera.position.set(0, 0.2, 6);
+  camera.lookAt(0, FRAMING_TARGET_Y, 0);
+
+  // Second camera sitting diametrically opposite the main one. Used only
+  // in test360 split-screen mode to render the avatar's back half.
+  const backCamera = new THREE.PerspectiveCamera(36, 1, 0.1, 100);
+  backCamera.position.set(0, 0.2, -6);
+  backCamera.lookAt(0, FRAMING_TARGET_Y, 0);
+
+  // Split "rotate sides" is now a simple camera roll — see applyOrbitTo
+  // and the rotateSides toggle. Each camera's up vector gets flipped to
+  // ±X so the avatar's base (world -Y) lands on the right edge of each
+  // half instead of the bottom. No offscreen compositor needed.
+
+  const composer = new EffectComposer(renderer);
+  // RenderPass reference saved so we can hot-swap its .scene/.camera when
+  // switching between the 3D avatar and a video-texture "source scene".
+  const renderPass = new RenderPass(avatarScene, camera);
+  composer.addPass(renderPass);
+  const bloom = new UnrealBloomPass(new THREE.Vector2(1024, 1024), 0.8, 0.85, 0.58);
+  composer.addPass(bloom);
+  const warpPass = new ShaderPass(warpShader);
+  composer.addPass(warpPass);
+  // warpPass.enabled is toggled at runtime — when off, the composer renders
+  // the raw avatar scene fullscreen (useful on a flat monitor without a
+  // physical glass cylinder prop). Default: OFF so /holo isn't a black page.
+  warpPass.enabled = false;
+
+  // Square source buffer fits the cylinder image exactly. Using the full
+  // viewport as the buffer would throw away vertical pixels on ultrawide
+  // displays; square keeps the avatar at max fidelity regardless of
+  // screen aspect. composer.setSize() manages its own internal targets;
+  // we override to square at setSize time.
+  const SRC_SIZE = 1024;
+
+  // ─── 360° panoramic render target ──────────────────────────────────
+  // For true walk-around viewing we need N different views of the avatar
+  // wrapped into a single wide panorama texture. Each strip i contains
+  // the avatar seen from azimuth 2π·i/N. The warp shader picks the strip
+  // by cylinder θ, so walking to the back of the cylinder shows the
+  // avatar's back, not the stretched-front-edge of a single view.
+  //
+  // Cost: N render passes per frame. The look we want is "one Momo wrapped
+  // around the cylinder", not "N mini-Momos in a ring". That only works if
+  // each camera's hFOV is *much* smaller than Momo's angular extent from
+  // the pano camera (~8° at R≈5.6) — otherwise each strip renders nearly
+  // the whole Momo, and you see N copies. With hFOV small, each strip
+  // captures only the azimuthal sliver of Momo at that camera's angle,
+  // and the strips stitch together into a continuous cylindrical unwrap.
+  // N=120 at 3° hFOV gives a visibly smooth wrap while keeping the render
+  // budget reasonable (narrow strips, modest height).
+  const PANO_N = 120;
+  const PANO_STRIP_W = 40;
+  const PANO_H = 768;
+  const PANO_W = PANO_N * PANO_STRIP_W;
+  const panoTarget = new THREE.WebGLRenderTarget(PANO_W, PANO_H, {
+    minFilter: THREE.LinearFilter,
+    magFilter: THREE.LinearFilter,
+    // Horizontal REPEAT so the 360° seam (pu wrapping from 1 back to 0)
+    // blends across the panorama's left/right edges instead of showing a
+    // hard boundary. Only works with WebGL2 for non-POT textures — our
+    // three.js default uses WebGL2 so we're fine.
+    wrapS: THREE.RepeatWrapping,
+    wrapT: THREE.ClampToEdgeWrapping,
+  });
+  // Bind to the *pass's* uniforms, not the shader def — ShaderPass clones
+  // the uniform object at construction, so writes to warpShader.uniforms
+  // after `new ShaderPass(...)` are silently dropped.
+  warpPass.uniforms.uPano.value = panoTarget.texture;
+
+  // Two things together make the ring look like one continuous cylinder
+  // (not a kaleidoscope of N little-Momos):
+  //   1. hFOV = 360°/N, so strip i and i+1 are azimuthally contiguous.
+  //   2. PANO_R is *close* to Momo — close enough that each camera's view
+  //      cone intersects only a narrow surface band of Momo. The farther
+  //      the camera, the more of Momo's hemisphere one camera captures,
+  //      and the more times Momo appears around the ring. At R ≈ 1.5 (just
+  //      outside Momo's ~0.4 body radius) each strip sees a thin slice.
+  const PANO_H_FOV = (2 * Math.PI) / PANO_N;
+  const _panoAspect = PANO_STRIP_W / PANO_H;
+  const PANO_V_FOV = 2 * Math.atan(Math.tan(PANO_H_FOV / 2) / _panoAspect);
+  // R=2.5 is the sweet spot: close enough that strips still capture narrow
+  // enough surface slices to read as one continuous unwrap (the 5× overlap
+  // between neighbours smears as soft motion blur, not discrete copies),
+  // far enough that Momo's body occupies roughly half the vertical frame
+  // instead of filling it edge-to-edge.
+  const PANO_R = 2.5;
+  const panoCamera = new THREE.PerspectiveCamera(
+    PANO_V_FOV * 180 / Math.PI, _panoAspect, 0.05, 100
+  );
+  const PANO_Y = 0.2;
+  // Stash the full-target viewport/scissor so we can carve the target
+  // into N strips per frame without leaking state into the composer.
+  const PANO_FULL_VP = panoTarget.viewport.clone();
+  const PANO_FULL_SCISSOR = panoTarget.scissor.clone();
+  function renderPanorama() {
+    const oldTarget = renderer.getRenderTarget();
+    const wasAutoClear = renderer.autoClear;
+    panoTarget.scissorTest = true;
+    // Manual clear once for the whole target, then disable autoClear so
+    // each strip's render() doesn't wipe the others. Same pattern as
+    // renderFaces — earlier versions used renderer.setScissorTest/setViewport
+    // directly, which leaked GL state into the subsequent composer pass and
+    // silently produced a black canvas.
+    renderer.setRenderTarget(panoTarget);
+    renderer.setClearColor(0x000000, 1);
+    renderer.clear(true, true, true);
+    renderer.autoClear = false;
+    for (let i = 0; i < PANO_N; i++) {
+      const angle = (i / PANO_N) * Math.PI * 2;
+      panoCamera.position.set(
+        Math.sin(angle) * PANO_R,
+        PANO_Y,
+        Math.cos(angle) * PANO_R,
+      );
+      panoCamera.lookAt(0, FRAMING_TARGET_Y, 0);
+      panoCamera.updateProjectionMatrix();
+      const x0 = i * PANO_STRIP_W;
+      // Scope viewport + scissor to the render target itself so
+      // three.js restores them correctly on subsequent setRenderTarget().
+      panoTarget.viewport.set(x0, 0, PANO_STRIP_W, PANO_H);
+      panoTarget.scissor.set(x0, 0, PANO_STRIP_W, PANO_H);
+      renderer.setRenderTarget(panoTarget);
+      // Use the same scene as the main renderer — whatever source mode
+      // is active (avatar scene, video scene), its 360° appearance is
+      // captured here.
+      renderer.render(renderPass.scene, panoCamera);
+    }
+    panoTarget.viewport.copy(PANO_FULL_VP);
+    panoTarget.scissor.copy(PANO_FULL_SCISSOR);
+    panoTarget.scissorTest = false;
+    renderer.autoClear = wasAutoClear;
+    renderer.setRenderTarget(oldTarget);
+  }
+
+  // ─── 4-face panorama render target ─────────────────────────────────
+  // Four 90°-FOV cameras, one per cardinal azimuth, rendered side-by-side
+  // into a 4-wide strip texture:
+  //   strip 0 → front, strip 1 → right, strip 2 → back, strip 3 → left.
+  // The shader treats these as 4 keyframes of a continuous 360° panorama:
+  // because each camera covers a full 90° slice at 90° FOV, the strips
+  // tile seamlessly when sampled via tangent projection — each cylinder
+  // column shows the avatar from its own viewing azimuth, rather than
+  // one camera's flat render smeared across a 90° sector. This is what
+  // makes a walk-around viewer see a coherent 3D figure instead of three
+  // disjoint billboards with the side-camera views pinned next to the
+  // forward view.
+  // Cost: 4 extra scene renders per frame, only when warp + 4-face are on.
+  // FACE_SIZE at 1280 ≈ 14 px per world-degree across each strip's 90° FOV,
+  // matching the old 36°→512 density before the wider-FOV rewrite. MSAA=4
+  // on the target smooths silhouette edges so the avatar's rim doesn't
+  // shimmer as you walk around the cylinder. Sync uFaceTexW below so the
+  // shader's seam-safe pad is derived from the real texture width.
+  const FACES_N = 4;
+  const FACE_SIZE = 1280;
+  const facesTarget = new THREE.WebGLRenderTarget(FACES_N * FACE_SIZE, FACE_SIZE, {
+    minFilter: THREE.LinearFilter,
+    magFilter: THREE.LinearFilter,
+    wrapS: THREE.ClampToEdgeWrapping,
+    wrapT: THREE.ClampToEdgeWrapping,
+    samples: 4,
+  });
+  warpPass.uniforms.uFacesTex.value = facesTarget.texture;
+  warpPass.uniforms.uFacesTexW.value = FACES_N * FACE_SIZE;
+
+  // 90° FOV makes each strip cover exactly its 90° panorama slice, so
+  // strip-to-strip transitions are continuous in horizontal angle. Camera
+  // distance is pulled in (from the old 6 used with the 36° framing camera)
+  // so the avatar still fills the frame vertically at the wider FOV.
+  const facesCamera = new THREE.PerspectiveCamera(90, 1, 0.1, 100);
+  const FACES_R = 2.8;
+  const FACES_Y = 0.2;
+  // Camera azimuth per face, in cylinder-walk order: front (camera at +Z),
+  // right (camera at +X, sees avatar's right), back (-Z), left (-X).
+  // The shader's uFaceDir flips this if the physical cylinder unwraps the
+  // other way. atan2 conventions (theta=0 at +X, growing CCW) are baked in
+  // here; do not touch without re-deriving the test card mapping.
+  const FACE_AZIMUTHS = [0, Math.PI / 2, Math.PI, -Math.PI / 2];
+  // Stash the original full-target viewport/scissor so we can restore them
+  // after carving the target into 4 strips per frame.
+  const FACES_FULL_VP = facesTarget.viewport.clone();
+  const FACES_FULL_SCISSOR = facesTarget.scissor.clone();
+  function renderFaces() {
+    const oldTarget = renderer.getRenderTarget();
+    const wasAutoClear = renderer.autoClear;
+    facesTarget.scissorTest = true;
+    // Manual clear once for the whole target, then disable autoClear so
+    // each strip's render() doesn't wipe the others if the GL driver
+    // ignores scissor during clears (some Intel/iOS combos do).
+    renderer.setRenderTarget(facesTarget);
+    renderer.setClearColor(0x000000, 1);
+    renderer.clear(true, true, true);
+    renderer.autoClear = false;
+    for (let i = 0; i < FACES_N; i++) {
+      const a = FACE_AZIMUTHS[i];
+      facesCamera.position.set(
+        Math.sin(a) * FACES_R,
+        FACES_Y,
+        Math.cos(a) * FACES_R,
+      );
+      facesCamera.lookAt(0, FRAMING_TARGET_Y, 0);
+      facesCamera.updateProjectionMatrix();
+      const x0 = i * FACE_SIZE;
+      // Set on the target itself — setRenderTarget reads these into GL state.
+      facesTarget.viewport.set(x0, 0, FACE_SIZE, FACE_SIZE);
+      facesTarget.scissor.set(x0, 0, FACE_SIZE, FACE_SIZE);
+      renderer.setRenderTarget(facesTarget);
+      renderer.render(renderPass.scene, facesCamera);
+    }
+    // Restore so other code paths (or a future single-target render) see
+    // the un-carved target again.
+    facesTarget.viewport.copy(FACES_FULL_VP);
+    facesTarget.scissor.copy(FACES_FULL_SCISSOR);
+    facesTarget.scissorTest = false;
+    renderer.autoClear = wasAutoClear;
+    renderer.setRenderTarget(oldTarget);
+  }
+
+  // ─── Video source pipeline ─────────────────────────────────────────
+  // To display a "real person" through the cylinder, we swap the 3D
+  // avatar scene for a flat scene whose only content is a fullscreen
+  // quad textured with a <video> element. The quad is scaled to preserve
+  // the video's native aspect ratio (contain-fit into the square source
+  // texture) so faces aren't stretched.
+  const videoEl = document.getElementById('video-el');
+  const videoTex = new THREE.VideoTexture(videoEl);
+  videoTex.colorSpace = THREE.SRGBColorSpace;
+  videoTex.minFilter = THREE.LinearFilter;
+  videoTex.magFilter = THREE.LinearFilter;
+
+  const videoScene = new THREE.Scene();
+  videoScene.background = new THREE.Color(0x000000);
+  const videoCamera = new THREE.OrthographicCamera(-1, 1, 1, -1, 0, 1);
+  const videoMesh = new THREE.Mesh(
+    new THREE.PlaneGeometry(2, 2),
+    new THREE.MeshBasicMaterial({ map: videoTex, toneMapped: false })
+  );
+  videoScene.add(videoMesh);
+
+  // Contain-fit of the video mesh inside whatever the current render target
+  // aspect is. Two asymmetries stack here: the render target is square when
+  // warp is on (because the cylinder's source must be square) but
+  // window-aspect when warp is off, and the video itself is usually 16:9 or
+  // 9:16. Without this, a portrait video comes out egg-shaped.
+  function updateVideoAspect() {
+    const w = window.innerWidth, h = window.innerHeight;
+    const targetAspect = warpPass.enabled ? 1 : (w / h);
+    // Ortho camera bounds: unit in the shorter axis, aspect in the other.
+    if (targetAspect >= 1) {
+      videoCamera.left = -targetAspect; videoCamera.right = targetAspect;
+      videoCamera.top = 1; videoCamera.bottom = -1;
+    } else {
+      videoCamera.left = -1; videoCamera.right = 1;
+      videoCamera.top = 1 / targetAspect; videoCamera.bottom = -1 / targetAspect;
+    }
+    videoCamera.updateProjectionMatrix();
+
+    const vw = videoEl.videoWidth, vh = videoEl.videoHeight;
+    if (!vw || !vh) return;
+    const videoAspect = vw / vh;
+    const xExt = targetAspect >= 1 ? 2 * targetAspect : 2;
+    const yExt = targetAspect >= 1 ? 2 : 2 / targetAspect;
+    // Contain: fit to whichever axis runs out first.
+    let fw, fh;
+    if (targetAspect <= videoAspect) { fw = xExt; fh = xExt / videoAspect; }
+    else                              { fh = yExt; fw = yExt * videoAspect; }
+    videoMesh.scale.set(fw / 2, fh / 2, 1);
+  }
+  videoEl.addEventListener('loadedmetadata', updateVideoAspect);
+  videoEl.addEventListener('resize', updateVideoAspect);
+
+  let currentSource = 'avatar'; // 'avatar' | 'video'
+
+  async function setSource(mode) {
+    if (mode === currentSource) return;
+    if (mode === 'avatar') {
+      videoEl.pause?.();
+      renderPass.scene = avatarScene;
+      renderPass.camera = camera;
+    } else if (mode === 'video') {
+      // Nothing to switch to yet if no file is loaded; the file picker
+      // handler calls setSource('video') again after setting videoEl.src.
+      if (!videoEl.src && !videoEl.srcObject) {
+        document.getElementById('file-video').click();
+        return;
+      }
+      videoEl.srcObject = null;
+      await videoEl.play().catch(() => {});
+      renderPass.scene = videoScene;
+      renderPass.camera = videoCamera;
+    }
+    currentSource = mode;
+    for (const [key, id] of [['avatar','btn-src-avatar']]) {
+      const el = document.getElementById(id);
+      if (el) el.setAttribute('aria-pressed', key === mode ? 'true' : 'false');
+    }
+    updateVideoAspect();
+    diag('source: ' + mode);
+  }
+
+  document.getElementById('btn-src-avatar').addEventListener('click', () => setSource('avatar'));
+  document.getElementById('file-video').addEventListener('change', async (e) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    // Keep it simple: object URL + loop + unmuted-by-default off (autoplay rules).
+    videoEl.srcObject = null;
+    videoEl.src = URL.createObjectURL(file);
+    videoEl.loop = true;
+    await videoEl.play().catch((err) => diag('video play blocked: ' + err.message, true));
+    currentSource = 'avatar'; // force switch path
+    setSource('video');
+  });
+
+  // ─── Calibration state ─────────────────────────────────────────────
+  // The display pipeline has four mutually-exclusive top-level modes.
+  // `params.mode` is the single source of truth — warp/pano360/test360/
+  // faces are derived at applyParams() time via MODE_SETTINGS below. The
+  // calibration panel reveals only the controls relevant to the active
+  // mode (see #cal [data-modes] rules above).
+  const STORAGE = 'omo.holo.cylinder.calib';
+  const MODE_LIST = ['flat', 'split', 'cyl4', 'cyl360'];
+  const MODE_LABELS = {
+    flat:   'AGENT',
+    split:  'FRONT · BACK',
+    cyl4:   'CYLINDER',
+    cyl360: 'CYLINDER 360°',
+  };
+  const MODE_NOTES = {
+    flat:   'Flat monitor, single view. Orbit with drag, zoom with wheel. No calibration — this is pure preview.',
+    split:  'Flat-monitor diptych: front on the left, back on the right, horoscope ring between. Press R to roll each camera 90° so the pedestal disk lands on the right edge of each half.',
+    cyl4:   '4-face walk-around on a cylinder. Arc span controls the per-face sector width. Use arrows to nudge the annulus center.',
+    cyl360: 'Full 360° panorama on a cylinder. Arc span is locked to 360°; arc center rotates the whole panorama.',
+  };
+  // Each mode freezes the render-pipeline flags. Anything not listed is
+  // left untouched (calibration geometry survives across mode switches).
+  const MODE_SETTINGS = {
+    flat:   { warp: false, pano360: false, test360: false, faces: 1 },
+    split:  { warp: false, pano360: false, test360: true,  faces: 1 },
+    cyl4:   { warp: true,  pano360: false, test360: false, faces: 4 },
+    cyl360: { warp: true,  pano360: true,  test360: false, faces: 1 },
+  };
+  const DEFAULTS = {
+    // Boot into AGENT (flat) — that's the default experience. URL
+    // `?mode=split`/`cyl4`/`cyl360` jumps to the other pipelines.
+    mode: 'flat',
+    cx: 0.5, cy: 0.5,
+    rMin: 0.05, rMax: 0.40,
+    thetaCenter: -Math.PI / 2,
+    thetaSpan: (160 * Math.PI) / 180,
+    // Shader pre-flips Y only — same axis as panes and viz cards, so the
+    // whole hologram reads congruent on the physical reflector. The X
+    // component the avatar used to need (ON/ON) is now applied directly
+    // on the avatar Object3D below (scale.x = -1), keeping the canvas
+    // defaults identical to every other projected surface.
+    flipX: false, flipY: true,
+    // 4-face walk-around direction. +1 = strips advance CW around the
+    // avatar (front, right, back, left). -1 reverses if the physical
+    // cylinder unwraps the other way and the avatar appears to turn the
+    // wrong way as you walk around. Only meaningful in cyl4 mode.
+    faceDir: 1,
+    // In split mode, rotate each half 90° toward the centerline so the
+    // two avatars lie horizontally flanking the horoscope ring.
+    rotateSides: false,
+    // Bare scene: black bg + sparkle dots + bottom pedestal rings only.
+    // No nebula, stars, crystals, grid, or big cylinder glow beam around
+    // the character. Lets the screen edges vanish against surrounding black.
+    bare: true,
+    // Mirror: CSS scaleY(-1) on the whole page. For projecting onto a
+    // physical mirror/reflector that would otherwise read text upside down.
+    // Default OFF so a normal monitor reads right-way-up; press M (or
+    // ?mirror=1) to flip when running on a reflector rig.
+    mirror: false,
+    // Camera framing for flat / split modes — applied on load so "SAVE POS"
+    // can capture a dragged-and-zoomed framing as the new default. Warp
+    // modes override these (they lock the camera straight-on), so the
+    // values only actually affect flat and split.
+    orbitRadius: 6,
+    orbitTheta: 0,
+    orbitPhi: 0,
+    backOrbitRadius: 6,
+    backOrbitTheta: Math.PI,
+    backOrbitPhi: 0,
+    // Avatar group position offset in world space. Shift+Arrows nudge
+    // X/Y, Shift+[ ] nudge Z, Shift+0 resets. Persists via SAVE POS.
+    avatarX: 0,
+    avatarY: 0,
+    avatarZ: 0,
+  };
+  // Saved calibration becomes the new default — values clicked through
+  // "save" win over the hardcoded DEFAULTS on every reload. We validate
+  // each key by type (and clamp numbers to a sane range) so a corrupt or
+  // partial save can never crash the page or blank the canvas.
+  const RANGES = {
+    cx: [0, 1], cy: [0, 1],
+    rMin: [0, 1.5], rMax: [0, 1.5],
+    thetaCenter: [-Math.PI * 2, Math.PI * 2],
+    thetaSpan: [0, Math.PI * 2 + 0.001],
+    faceDir: [-1, 1],
+    orbitRadius: [2, 20],
+    orbitTheta: [-Math.PI * 8, Math.PI * 8],
+    orbitPhi: [-Math.PI / 2, Math.PI / 2],
+    backOrbitRadius: [2, 20],
+    backOrbitTheta: [-Math.PI * 8, Math.PI * 8],
+    backOrbitPhi: [-Math.PI / 2, Math.PI / 2],
+    avatarX: [-3, 3],
+    avatarY: [-3, 3],
+    avatarZ: [-3, 3],
+  };
+  // Translate an old-format saved object (with warp/pano360/test360 flags)
+  // into one of the four named modes, so users who saved calibration
+  // against the pre-mode schema land in the right place on first reload.
+  function legacyToMode(s) {
+    if (!s || typeof s !== 'object') return null;
+    if (s.warp === true && s.pano360 === true)  return 'cyl360';
+    if (s.warp === true)                         return 'cyl4';
+    if (s.warp === false && s.test360 === true)  return 'split';
+    if (s.warp === false)                        return 'flat';
+    return null;
+  }
+  function mergeSaved(saved) {
+    const out = { ...DEFAULTS };
+    if (!saved || typeof saved !== 'object') return out;
+    for (const key of Object.keys(DEFAULTS)) {
+      if (!(key in saved)) continue;
+      const def = DEFAULTS[key];
+      let val = saved[key];
+      if (typeof def !== typeof val) continue;
+      if (typeof def === 'number') {
+        if (!Number.isFinite(val)) continue;
+        const r = RANGES[key];
+        if (r) val = Math.max(r[0], Math.min(r[1], val));
+      }
+      out[key] = val;
+    }
+    if (!MODE_LIST.includes(out.mode)) {
+      out.mode = legacyToMode(saved) || DEFAULTS.mode;
+    }
+    if (out.rMin >= out.rMax) out.rMax = Math.min(1.5, out.rMin + 0.005);
+    return out;
+  }
+  function loadParams() {
+    let saved = null;
+    try {
+      const raw = localStorage.getItem(STORAGE);
+      if (raw) saved = JSON.parse(raw);
+    } catch (err) {
+      console.warn('[holo] bad saved calibration, ignoring', err);
+      try { localStorage.removeItem(STORAGE); } catch {}
+    }
+    const merged = mergeSaved(saved);
+    const q = new URLSearchParams(location.search);
+    // ?mode=flat|split|cyl4|cyl360 — authoritative override.
+    // ?warp=0 and ?test360=... are honored for backwards compatibility
+    // with links created before the unified mode selector.
+    if (q.has('mode') && MODE_LIST.includes(q.get('mode'))) {
+      merged.mode = q.get('mode');
+    } else {
+      const legacy = {};
+      if (q.has('warp')) legacy.warp = q.get('warp') !== '0' && q.get('warp') !== 'false';
+      if (q.has('test360')) legacy.test360 = q.get('test360') !== '0' && q.get('test360') !== 'false';
+      if (Object.keys(legacy).length) {
+        const m = legacyToMode({ warp: legacy.warp ?? true, ...legacy });
+        if (m) merged.mode = m;
+      }
+    }
+    // ?mirror=1|0 — flip the page (scaleY(-1)) for reflector rigs.
+    if (q.has('mirror')) {
+      const v = q.get('mirror');
+      merged.mirror = v !== '0' && v !== 'false';
+    }
+    return merged;
+  }
+  const params = loadParams();
+  avatar.position.set(params.avatarX, params.avatarY, params.avatarZ);
+
+  function layout() {
+    const w = window.innerWidth;
+    const h = window.innerHeight;
+    renderer.setSize(w, h, false);
+    canvas.style.width = w + 'px';
+    canvas.style.height = h + 'px';
+    // When warp is on in a cylinder mode (cyl4 / cyl360), the shader
+    // samples from uFacesTex / uPano — not tDiffuse — so the old "source
+    // must be square" constraint doesn't apply. Size the composer to the
+    // full canvas in device pixels so the final warp pass outputs at
+    // native resolution instead of being upscaled from 1024². Camera
+    // aspect stays locked to 1:1 so the per-face strip renders stay
+    // square (uFacesTex is laid out as 4× square tiles).
+    if (warpPass.enabled) {
+      const pr = renderer.getPixelRatio();
+      composer.setSize(Math.round(w * pr), Math.round(h * pr));
+      camera.aspect = 1;
+    } else if (params.mode === 'split') {
+      // Split view: each half renders at (w/2) × h with its own camera.
+      // We bypass the composer in this mode (see render loop below), but
+      // still size it consistently so a quick toggle back is cheap.
+      composer.setSize(w, h);
+      camera.aspect = (w / 2) / h;
+      backCamera.aspect = (w / 2) / h;
+      backCamera.updateProjectionMatrix();
+    } else {
+      composer.setSize(w, h);
+      camera.aspect = w / h;
+    }
+    warpPass.uniforms.uResolution.value.set(w, h);
+    camera.updateProjectionMatrix();
+    updateVideoAspect();
+  }
+  layout();
+  window.addEventListener('resize', layout);
+  window.addEventListener('orientationchange', layout);
+
+  // Swap the avatar's host scene between full holo stage (cute) and minimal
+  // pitch-black. Triggered by warp toggling: on a physical glass cylinder
+  // any non-black pixel hazes the projection, so warp-on ⇒ minimal scene.
+  // On a flat monitor (warp off) we want the nebula/stars/pedestal/crystals.
+  function rebuildAvatarScene(minimal, bare = false) {
+    if (minimal === currentMinimal && bare === currentBare) return;
+    currentMinimal = minimal;
+    currentBare = bare;
+    avatarScene.remove(avatar);
+    const next = createHologramScene({ minimal, bare });
+    next.scene.add(avatar);
+    // If the renderer is currently pointed at the avatar scene (not a video
+    // scene), swap its pointer too. Otherwise just stash the new scene —
+    // setSource('avatar') will pick it up when the user switches back.
+    if (renderPass.scene === avatarScene) renderPass.scene = next.scene;
+    avatarScene = next.scene;
+    updateScene = next.update;
+    applySceneBackgroundForTheme();
+  }
+
+  // createHologramScene() hard-codes scene.background to black (or near-
+  // black) regardless of `bare`. In light theme we want the cream WebGL
+  // clear color to actually show, so we null out the scene background —
+  // THREE then falls back to renderer.clearColor each frame.
+  function applySceneBackgroundForTheme() {
+    if (!avatarScene) return;
+    const theme = document.documentElement.getAttribute('data-theme') || 'dark';
+    const mode = activeMode();
+    // Warp modes always need black for the physical projector optics.
+    if (mode === 'cyl4' || mode === 'cyl360') {
+      avatarScene.background = new THREE.Color(0x000000);
+      applySceneLightingForTheme(); // warp ⇒ original holo recipe
+      return;
+    }
+    if (theme === 'light') {
+      avatarScene.background = null; // ⇒ falls through to renderer cream
+    } else {
+      // Restore the scene's intended dark backdrop. `lite` (minimal+bare)
+      // uses pure black; the full holo stage uses near-black 0x030310.
+      avatarScene.background = new THREE.Color(currentMinimal || currentBare ? 0x000000 : 0x030310);
+    }
+    applySceneLightingForTheme();
+  }
+
+  // Re-tune the avatar scene's lights so omo reads on a cream backdrop.
+  // createHologramScene()'s default recipe (cyan key + pink fill + cyan
+  // halo) is designed for pure black. Drop those onto warm paper and the
+  // avatar's mid-cyan body has too little luminance contrast to read —
+  // hence the "I can barely see omo" feedback. Swap to the landing page's
+  // recipe (warm key + cool fill + pink rim) when light theme is active.
+  // We touch only direct scene children — the avatar's internal orb
+  // PointLight is a child of `avatar` and stays untouched.
+  function applySceneLightingForTheme() {
+    if (!avatarScene) return;
+    const theme = document.documentElement.getAttribute('data-theme') || 'dark';
+    const mode = activeMode();
+    const lightMode = theme === 'light' && mode !== 'cyl4' && mode !== 'cyl360';
+
+    let hemi = null, dirs = [], point = null;
+    for (const child of avatarScene.children) {
+      if (child.isHemisphereLight) hemi = child;
+      else if (child.isDirectionalLight) dirs.push(child);
+      else if (child.isPointLight && !point) point = child;
+    }
+    // Identify key (brighter) vs fill so the swap survives re-orderings.
+    dirs.sort((a, b) => b.intensity - a.intensity);
+    const key = dirs[0] || null, fill = dirs[1] || null;
+
+    if (lightMode) {
+      if (hemi)  { hemi.color.setHex(0xfff1d6); hemi.groundColor.setHex(0xb3e8ff); hemi.intensity = 0.85; }
+      if (key)   { key.color.setHex(0xffe6c0);  key.intensity = 1.70; }
+      if (fill)  { fill.color.setHex(0xb3e8ff); fill.intensity = 0.65; }
+      if (point) { point.color.setHex(0xff8fb3); point.intensity = 1.10; }
+      // Slightly tone down exposure so highlights don't blow on cream.
+      renderer.toneMappingExposure = 1.05;
+      // /landing is paper-flat (no postprocessing). To match its bg cleanly,
+      // disable bloom in light mode — otherwise the cream bg sits above the
+      // bloom threshold and self-glows toward white. Avatar still reads on
+      // paper because the lighting recipe above gives it form.
+      if (bloom) { bloom.enabled = false; }
+    } else {
+      if (hemi)  { hemi.color.setHex(0x9cc8ff); hemi.groundColor.setHex(0x220044); hemi.intensity = 0.45; }
+      if (key)   { key.color.setHex(0x00e5ff);  key.intensity = 1.00; }
+      if (fill)  { fill.color.setHex(0xff66b3); fill.intensity = 0.50; }
+      if (point) { point.color.setHex(0xaeefff); point.intensity = 1.80; }
+      renderer.toneMappingExposure = 1.35;
+      if (bloom) { bloom.enabled = true; bloom.threshold = 0.58; bloom.strength = 0.8; }
+    }
+  }
+
+  // `mode` is the single source of truth. Everything the render pipeline
+  // needs (warp on/off, panorama on/off, split-screen on/off, face count,
+  // and the thetaSpan lock for cyl360) is derived here so the UI can
+  // never put the pipeline into an inconsistent state.
+  function deriveFromMode() {
+    if (!MODE_LIST.includes(params.mode)) params.mode = DEFAULTS.mode;
+    const m = MODE_SETTINGS[params.mode];
+    params.warp = m.warp;
+    params.pano360 = m.pano360;
+    params.test360 = m.test360;
+    params.faces = m.faces;
+    // cyl360 implies the full ring. If the user had a narrower saved
+    // span, snap it to 2π for this mode only — we don't mutate the
+    // underlying value when they're in another mode, so toggling back
+    // to cyl4 restores their old span.
+    if (params.mode === 'cyl360' && params.thetaSpan < 2 * Math.PI - 1e-3) {
+      params.thetaSpan = 2 * Math.PI;
+    }
+  }
+
+  function applyParams() {
+    deriveFromMode();
+    warpPass.uniforms.uCenter.value.set(params.cx, params.cy);
+    warpPass.uniforms.uRMin.value = params.rMin;
+    warpPass.uniforms.uRMax.value = params.rMax;
+    warpPass.uniforms.uThetaCenter.value = params.thetaCenter;
+    warpPass.uniforms.uThetaSpan.value = params.thetaSpan;
+    warpPass.uniforms.uFlipX.value = params.flipX ? 1 : 0;
+    warpPass.uniforms.uFlipY.value = params.flipY ? 1 : 0;
+    warpPass.uniforms.uFaces.value = params.faces;
+    warpPass.uniforms.uFaceDir.value = params.faceDir < 0 ? -1 : 1;
+    warpPass.uniforms.u360.value = params.pano360 ? 1 : 0;
+    const warpOn = !!params.warp;
+    if (warpPass.enabled !== warpOn) {
+      warpPass.enabled = warpOn;
+      layout();
+      if (warpOn) {
+        // Warp pre-distortion assumes a straight-on square view; override orbit.
+        camera.position.set(0, 0.2, 6);
+        camera.lookAt(0, 0, 0);
+      } else if (typeof applyOrbit === 'function') {
+        applyOrbit();
+      }
+    }
+    // warpOn forces the reflector-safe `minimal` look (black bg, only
+    // sparkles). When warp is off, `bare` is the user-controllable version
+    // that also strips the backdrop but keeps the pedestal rings.
+    // In light theme we force `bare: true` so the dark nebula/stars
+    // backdrop doesn't paint over the cream WebGL clear color — the user
+    // expects the holoscope to actually be light, not a dark scene on a
+    // light page. The user-controllable BG button still works (it ORs in).
+    const lightTheme = document.documentElement.getAttribute('data-theme') === 'light';
+    rebuildAvatarScene(warpOn, !warpOn && (!!params.bare || lightTheme));
+    document.body.classList.toggle('test360', !!params.test360);
+    document.body.classList.toggle('mirror', !!params.mirror);
+    // Drive the mode-aware CSS — corner ticks + meta nav hide in cyl4/360
+    // so the optics see pure-black pixels at the screen edges. Also feeds
+    // the theme-aware WebGL clear-color watcher in renderer setup.
+    for (const m of ['flat', 'split', 'cyl4', 'cyl360']) {
+      document.body.classList.toggle(`mode-${m}`, params.mode === m);
+    }
+    const btnBgEl = document.getElementById('btn-bg');
+    if (btnBgEl) btnBgEl.setAttribute('aria-pressed', params.bare ? 'true' : 'false');
+    reflectModeUI();
+    layout();
+  }
+
+  // ─── Calibration panel wiring ──────────────────────────────────────
+  const $ = (id) => document.getElementById(id);
+  const calPanelEl = $('cal');
+  const calNoteEl = $('cal-note');
+  const modeButtons = Array.from(document.querySelectorAll('#toolbar .mode-group button'));
+  // Only the sliders / checkboxes that still have a presence in the DOM.
+  // Controls retired to derived-from-mode status (warp, 360°, 4-face) are
+  // gone — the mode selector is the only way to change them now.
+  const S = {
+    cx: $('s-cx'), cy: $('s-cy'),
+    rmin: $('s-rmin'), rmax: $('s-rmax'),
+    tc: $('s-tc'), ts: $('s-ts'),
+    fx: $('s-fx'), fy: $('s-fy'),
+    fd: $('s-fd'),
+    rs: $('s-rs'),
+  };
+  const V = {
+    cx: $('v-cx'), cy: $('v-cy'),
+    rmin: $('v-rmin'), rmax: $('v-rmax'),
+    tc: $('v-tc'), ts: $('v-ts'),
+  };
+
+  // Reflect the active mode into the toolbar, the #cal panel attribute
+  // (which drives per-row visibility via CSS), and the descriptive note.
+  function reflectModeUI() {
+    for (const b of modeButtons) {
+      const on = b.dataset.mode === params.mode;
+      b.setAttribute('aria-checked', on ? 'true' : 'false');
+      b.setAttribute('aria-pressed', on ? 'true' : 'false');
+    }
+    if (calPanelEl) calPanelEl.setAttribute('data-mode', params.mode);
+    if (calNoteEl) {
+      calNoteEl.textContent = `${MODE_LABELS[params.mode]} · ${MODE_NOTES[params.mode]}`;
+    }
+  }
+
+  function writeInputs() {
+    S.cx.value = params.cx; S.cy.value = params.cy;
+    S.rmin.value = params.rMin; S.rmax.value = params.rMax;
+    S.tc.value = (params.thetaCenter * 180 / Math.PI).toFixed(1);
+    S.ts.value = (params.thetaSpan * 180 / Math.PI).toFixed(1);
+    S.fx.checked = params.flipX; S.fy.checked = params.flipY;
+    S.fd.checked = params.faceDir < 0;
+    S.rs.checked = !!params.rotateSides;
+    refreshLabels();
+  }
+  function refreshLabels() {
+    V.cx.textContent = (+S.cx.value).toFixed(3);
+    V.cy.textContent = (+S.cy.value).toFixed(3);
+    V.rmin.textContent = (+S.rmin.value).toFixed(3);
+    V.rmax.textContent = (+S.rmax.value).toFixed(3);
+    V.tc.textContent = (+S.tc.value).toFixed(1);
+    V.ts.textContent = (+S.ts.value).toFixed(1);
+  }
+  function readInputs() {
+    params.cx = +S.cx.value; params.cy = +S.cy.value;
+    params.rMin = +S.rmin.value; params.rMax = +S.rmax.value;
+    params.thetaCenter = (+S.tc.value * Math.PI) / 180;
+    params.thetaSpan = (+S.ts.value * Math.PI) / 180;
+    params.flipX = S.fx.checked; params.flipY = S.fy.checked;
+    params.faceDir = S.fd.checked ? -1 : 1;
+    params.rotateSides = S.rs.checked;
+    if (params.rMin >= params.rMax) {
+      params.rMax = Math.min(1.2, params.rMin + 0.005);
+      S.rmax.value = params.rMax;
+    }
+    refreshLabels();
+    applyParams();
+    syncOrbitUp();
+  }
+  for (const el of Object.values(S)) {
+    el.addEventListener('input', readInputs);
+    el.addEventListener('change', readInputs);
+  }
+
+  // Mode selector — sole path for switching the render pipeline.
+  function setMode(next) {
+    if (!MODE_LIST.includes(next) || params.mode === next) return;
+    params.mode = next;
+    applyParams();
+    writeInputs(); // thetaSpan may have snapped to 360° entering cyl360
+    syncOrbitUp();  // split mode only; elsewhere this resets up to +Y
+    diag(`mode → ${MODE_LABELS[next]}`);
+  }
+  for (const b of modeButtons) {
+    b.addEventListener('click', () => setMode(b.dataset.mode));
+  }
+  // Save: write a snapshot keyed only on known DEFAULTS keys so future
+  // schema changes don't carry forward stale fields. This snapshot is the
+  // new default on every subsequent reload. saveCalibration returns true
+  // on success so the caller can animate a confirmation state.
+  function saveCalibration() {
+    const snapshot = {};
+    for (const key of Object.keys(DEFAULTS)) snapshot[key] = params[key];
+    try {
+      localStorage.setItem(STORAGE, JSON.stringify(snapshot));
+      diag('calibration saved · this is now the default');
+      return true;
+    } catch (err) {
+      console.error('[holo] save failed', err);
+      diag('save failed: ' + (err && err.message || 'storage error'));
+      return false;
+    }
+  }
+  // Flash a button's label to "SAVED ✓" for ~1.2s so the click feels
+  // acknowledged. Restoring the original text via data-* keeps the CSS
+  // class swap idempotent even if the user mashes the button.
+  function flashSaved(btn) {
+    if (!btn) return;
+    if (btn.dataset.flashing === '1') return;
+    const original = btn.textContent;
+    btn.dataset.flashing = '1';
+    btn.classList.add('saved');
+    btn.textContent = 'SAVED ✓';
+    setTimeout(() => {
+      btn.classList.remove('saved');
+      btn.textContent = original;
+      delete btn.dataset.flashing;
+    }, 1200);
+  }
+  function wireSaveButton(id) {
+    const btn = $(id);
+    if (!btn) return;
+    btn.addEventListener('click', () => {
+      if (saveCalibration()) flashSaved(btn);
+    });
+  }
+  wireSaveButton('cal-save');
+  wireSaveButton('s-rs-save');
+  wireSaveButton('btn-save-pos');
+  // Reset: clear the saved snapshot too, so factory defaults persist
+  // across reloads instead of being overwritten by stale storage.
+  $('cal-reset').addEventListener('click', () => {
+    try { localStorage.removeItem(STORAGE); } catch {}
+    // Keep the active mode across reset — the user is recalibrating this
+    // rig, not switching to a different display. Everything else (geometry,
+    // flips, face direction) reverts to factory defaults.
+    const prevMode = params.mode;
+    Object.assign(params, DEFAULTS);
+    params.mode = prevMode;
+    writeInputs(); applyParams();
+    syncOrbitUp();
+    diag('calibration reset to factory defaults');
+  });
+  writeInputs();
+  applyParams();
+
+  // ─── UI toggles ────────────────────────────────────────────────────
+  const btnCal = $('btn-cal');
+  const btnTest = $('btn-test');
+  const btnFs = $('btn-fs');
+  const btnBg = $('btn-bg');
+
+  function toggleCal(on) {
+    const open = on === undefined ? calPanelEl.hasAttribute('hidden') : on;
+    if (open) { calPanelEl.removeAttribute('hidden'); btnCal.setAttribute('aria-pressed', 'true'); }
+    else       { calPanelEl.setAttribute('hidden', ''); btnCal.setAttribute('aria-pressed', 'false'); }
+  }
+  function toggleTest(on) {
+    const next = on === undefined ? (warpPass.uniforms.uTest.value < 0.5 ? 1 : 0) : (on ? 1 : 0);
+    warpPass.uniforms.uTest.value = next;
+    btnTest.setAttribute('aria-pressed', next ? 'true' : 'false');
+  }
+  function toggleBare(on) {
+    params.bare = on === undefined ? !params.bare : !!on;
+    applyParams();
+    saveCalibration();
+    diag('bare bg ' + (params.bare ? 'on' : 'off'));
+  }
+  function toggleMirror(on) {
+    params.mirror = on === undefined ? !params.mirror : !!on;
+    document.body.classList.toggle('mirror', !!params.mirror);
+    saveCalibration();
+    diag('mirror ' + (params.mirror ? 'on' : 'off'));
+  }
+  btnCal.addEventListener('click', () => toggleCal());
+  btnTest.addEventListener('click', () => toggleTest());
+  if (btnBg) btnBg.addEventListener('click', () => toggleBare());
+  toggleCal(false);
+  btnFs.addEventListener('click', () => {
+    if (!document.fullscreenElement) document.documentElement.requestFullscreen();
+    else document.exitFullscreen();
+  });
+
+  // Auto-hide UI during playback so the reflection stays clean.
+  let hideTimer = null;
+  function showUI() {
+    document.body.classList.add('show-ui');
+    clearTimeout(hideTimer);
+    hideTimer = setTimeout(() => document.body.classList.remove('show-ui'), 2800);
+  }
+  ['mousemove', 'touchstart', 'keydown'].forEach((ev) =>
+    window.addEventListener(ev, showUI, { passive: true })
+  );
+  showUI();
+
+  // Keyboard — mode, calibration, test, fullscreen, nudges.
+  // 1/2/3/4 select the four display modes directly. Arrows nudge the
+  // annulus center (no-op in flat/split since those modes ignore cx/cy).
+  const KEY_TO_MODE = { '1': 'flat' };
+  window.addEventListener('keydown', (e) => {
+    if (e.target instanceof HTMLInputElement) return;
+    if (KEY_TO_MODE[e.key]) { setMode(KEY_TO_MODE[e.key]); return; }
+    if (e.key === 'c' || e.key === 'C') toggleCal();
+    else if (e.key === 't' || e.key === 'T') toggleTest();
+    else if (e.key === 'b' || e.key === 'B') toggleBare();
+    else if (e.key === 'm' || e.key === 'M') {
+      // Shift+M is the legacy mirror toggle (for reflector rigs). Plain M
+      // is owned by /voice-mode.js (cycles PTT/OFF/ON) — we don't handle
+      // it here so the global handler is the sole owner.
+      if (e.shiftKey) toggleMirror();
+    }
+    else if (e.key === 'r' || e.key === 'R') {
+      // Toggle split-mode side rotation: rolls each camera 90° so the
+      // avatar's pedestal lies on the right edge of each half instead of
+      // the bottom. Only meaningful in split mode; silently no-ops
+      // elsewhere so the key doesn't swallow typing in other modes.
+      if (params.mode === 'split') {
+        params.rotateSides = !params.rotateSides;
+        writeInputs();
+        applyParams();
+        syncOrbitUp();
+      }
+    }
+    else if (e.key === 'f' || e.key === 'F') {
+      if (!document.fullscreenElement) document.documentElement.requestFullscreen();
+      else document.exitFullscreen();
+    }
+    else if (e.key === 's' || e.key === 'S') {
+      // Save current camera framing (and all other calibration params) as
+      // the default on reload. Mirrors the SAVE POS toolbar button.
+      if (saveCalibration()) flashSaved(document.getElementById('btn-save-pos'));
+    }
+    else if (e.key === 'u' || e.key === 'U') {
+      // U = toggle UI chrome (toolbar + diag). H is taken by pane-layer for
+      // opening the HQ pane, so we use U here so both can coexist.
+      document.body.classList.toggle('chrome-hidden');
+    }
+    else if (e.shiftKey && (
+      e.key === 'ArrowLeft' || e.key === 'ArrowRight' ||
+      e.key === 'ArrowUp'   || e.key === 'ArrowDown'  ||
+      e.code === 'BracketLeft' || e.code === 'BracketRight' ||
+      e.code === 'Digit0'
+    )) {
+      // Avatar group offset. Arrows = X/Y in world space, [ ] = Z depth,
+      // 0 resets. Use SAVE POS (S) to bake into the default on reload.
+      const STEP = 0.05;
+      if      (e.code === 'Digit0')       { params.avatarX = 0; params.avatarY = 0; params.avatarZ = 0; }
+      else if (e.key  === 'ArrowLeft')    params.avatarX -= STEP;
+      else if (e.key  === 'ArrowRight')   params.avatarX += STEP;
+      else if (e.key  === 'ArrowUp')      params.avatarY += STEP;
+      else if (e.key  === 'ArrowDown')    params.avatarY -= STEP;
+      else if (e.code === 'BracketLeft')  params.avatarZ -= STEP;
+      else if (e.code === 'BracketRight') params.avatarZ += STEP;
+      const clamp = (n) => Math.max(-3, Math.min(3, Math.round(n * 100) / 100));
+      params.avatarX = clamp(params.avatarX);
+      params.avatarY = clamp(params.avatarY);
+      params.avatarZ = clamp(params.avatarZ);
+      avatar.position.set(params.avatarX, params.avatarY, params.avatarZ);
+      diag(`avatar · x ${params.avatarX} y ${params.avatarY} z ${params.avatarZ}`);
+      e.preventDefault();
+    }
+    else if (e.key === 'ArrowLeft')  { params.cx = Math.max(0, params.cx - 0.002); S.cx.value = params.cx; refreshLabels(); applyParams(); }
+    else if (e.key === 'ArrowRight') { params.cx = Math.min(1, params.cx + 0.002); S.cx.value = params.cx; refreshLabels(); applyParams(); }
+    else if (e.key === 'ArrowUp')    { params.cy = Math.max(0, params.cy - 0.002); S.cy.value = params.cy; refreshLabels(); applyParams(); }
+    else if (e.key === 'ArrowDown')  { params.cy = Math.min(1, params.cy + 0.002); S.cy.value = params.cy; refreshLabels(); applyParams(); }
+  });
+
+  // ─── Mouse orbit (flat-monitor mode only) ──────────────────────────
+  // Drag to swing the camera around the avatar; wheel to zoom. In warp
+  // mode the camera is locked to a canonical straight-on pose because the
+  // polar-anamorphic pre-distortion assumes it, and in pano360 the N-view
+  // panorama already covers every angle — so orbit only runs with warp off.
+  //
+  // In split (FRONT·BACK) mode we keep a second, independent orbit for
+  // the back camera so dragging on the right half of the screen steers
+  // the back view without disturbing the front. The back orbit starts at
+  // θ=π (diametrically opposite the front) so its default pose matches
+  // the old static backCamera.position of (0, 0.2, -6).
+  // `up` is the camera's up vector — default world +Y. In split mode
+  // with rotateSides, we flip it to ±X to roll the view 90° so the
+  // avatar's pedestal lands on the right edge of each half instead of
+  // the bottom. For the front camera (looking from +Z) up = (1,0,0)
+  // puts world -Y on the right; for the back camera (looking from -Z)
+  // up = (-1,0,0) mirrors that so the base stays on the right side.
+  const orbit = {
+    radius: params.orbitRadius,
+    theta: params.orbitTheta,            // azimuth, CCW from +Z
+    phi: params.orbitPhi,                // pitch; >0 looks down at avatar
+    target: new THREE.Vector3(0, FRAMING_TARGET_Y, 0),
+    up: new THREE.Vector3(0, 1, 0),
+    dragging: false,
+    last: { x: 0, y: 0 },
+  };
+  const backOrbit = {
+    radius: params.backOrbitRadius,
+    theta: params.backOrbitTheta,
+    phi: params.backOrbitPhi,
+    target: new THREE.Vector3(0, FRAMING_TARGET_Y, 0),
+    up: new THREE.Vector3(0, 1, 0),
+    dragging: false,
+    last: { x: 0, y: 0 },
+  };
+  // Mirror orbit state back into params so saveCalibration() can persist
+  // the user's dragged-and-zoomed framing. Called after every commitOrbit.
+  function syncOrbitToParams() {
+    params.orbitRadius = orbit.radius;
+    params.orbitTheta  = orbit.theta;
+    params.orbitPhi    = orbit.phi;
+    params.backOrbitRadius = backOrbit.radius;
+    params.backOrbitTheta  = backOrbit.theta;
+    params.backOrbitPhi    = backOrbit.phi;
+  }
+  const PHI_LIMIT = Math.PI / 2 - 0.05;
+  function applyOrbitTo(cam, o) {
+    const ph = Math.max(-PHI_LIMIT, Math.min(PHI_LIMIT, o.phi));
+    cam.position.set(
+      o.target.x + o.radius * Math.cos(ph) * Math.sin(o.theta),
+      o.target.y + o.radius * Math.sin(ph),
+      o.target.z + o.radius * Math.cos(ph) * Math.cos(o.theta),
+    );
+    cam.up.copy(o.up);
+    cam.lookAt(o.target);
+  }
+  function applyOrbit()     { applyOrbitTo(camera, orbit); }
+  function applyBackOrbit() { applyOrbitTo(backCamera, backOrbit); }
+  // Sync the two orbits' up vectors with the current rotateSides state.
+  // Both cameras use up = +X so that world -Y (avatar's base) lands on
+  // the inside edge of each half — toward the center divider — with
+  // the head pointing outward. Matches the user's hologram rig where
+  // the pedestals meet at the horoscope ring.
+  function syncOrbitUp() {
+    if (params.mode === 'split' && params.rotateSides) {
+      orbit.up.set(1, 0, 0);
+      backOrbit.up.set(1, 0, 0);
+    } else {
+      orbit.up.set(0, 1, 0);
+      backOrbit.up.set(0, 1, 0);
+    }
+    applyOrbit();
+    applyBackOrbit();
+  }
+  syncOrbitUp();
+
+  // In split mode, which half of the screen the pointer lands on decides
+  // whether we steer the front orbit or the back orbit. Elsewhere it's
+  // always the front orbit.
+  function pickOrbitForEvent(e) {
+    if (params.mode === 'split' && e.clientX >= window.innerWidth / 2) {
+      return backOrbit;
+    }
+    return orbit;
+  }
+  function commitOrbit(o) {
+    if (o === backOrbit) applyBackOrbit();
+    else applyOrbit();
+    syncOrbitToParams();
+  }
+  // Which orbit the active drag is steering; set at pointerdown.
+  let activeOrbit = null;
+
+  // ─── Tap / space = connect (same plumbing as reflector) ────────────
+  let dragSuppress = false, pointerStart = null;
+  window.addEventListener('pointerdown', (e) => {
+    if (e.target.closest('#toolbar') || e.target.closest('#cal')) return;
+    pointerStart = { x: e.clientX, y: e.clientY };
+    dragSuppress = false;
+    if (!warpPass.enabled) {
+      activeOrbit = pickOrbitForEvent(e);
+      activeOrbit.dragging = true;
+      activeOrbit.last.x = e.clientX;
+      activeOrbit.last.y = e.clientY;
+    }
+  }, { capture: true });
+  window.addEventListener('pointermove', (e) => {
+    if (!pointerStart) return;
+    const dx = e.clientX - pointerStart.x, dy = e.clientY - pointerStart.y;
+    if (dx * dx + dy * dy > 36) dragSuppress = true;
+    if (activeOrbit && activeOrbit.dragging) {
+      const ddx = e.clientX - activeOrbit.last.x;
+      const ddy = e.clientY - activeOrbit.last.y;
+      activeOrbit.last.x = e.clientX;
+      activeOrbit.last.y = e.clientY;
+      activeOrbit.theta -= ddx * 0.005;
+      activeOrbit.phi   += ddy * 0.005;
+      commitOrbit(activeOrbit);
+    }
+  }, { capture: true });
+  window.addEventListener('pointerup', () => {
+    pointerStart = null;
+    if (activeOrbit) activeOrbit.dragging = false;
+    activeOrbit = null;
+  }, { capture: true });
+  window.addEventListener('wheel', (e) => {
+    if (e.target.closest('#toolbar') || e.target.closest('#cal')) return;
+    if (warpPass.enabled) return;
+    e.preventDefault();
+    const o = pickOrbitForEvent(e);
+    o.radius = Math.max(2, Math.min(20, o.radius * (1 + e.deltaY * 0.001)));
+    commitOrbit(o);
+  }, { passive: false });
+  document.addEventListener('click', (e) => {
+    if (e.target.closest('#toolbar') || e.target.closest('#cal') || e.target.closest('#voice-mode-hud')) return;
+    if (dragSuppress) { dragSuppress = false; return; }
+    // In PTT / OFF the user is opting out of always-on. A stray click
+    // shouldn't override the mode — only 'on' uses click to (re)connect.
+    if (window.omoVoiceMode && window.omoVoiceMode.current !== 'on') return;
+    connectHandler();
+  });
+
+  // ─── Gemini Live session (same as reflector) ───────────────────────
+  let liveSession = null, micCtx = null, micStream = null, micNode = null;
+  let playCtx = null, cuteInput = null, analyser = null, analyserData = null;
+  let playHead = 0, playingSources = [];
+  let connecting = false, connected = false;
+  let sessionInfo = null;
+
+  // Voice-mode integration — owned by /voice-mode.js. We just react to its
+  // events. `frozen` is kept as a derived flag so the existing render-loop
+  // "pause the avatar" checks still work without changes.
+  try { window.omoVoiceMode?.enablePtt(true); } catch {}
+  let frozen = (window.omoVoiceMode?.current === 'off');
+  window.addEventListener('omo:voice-frozen', (e) => {
+    frozen = !!e.detail?.frozen;
+    if (cuteInput) cuteInput.gain.value = frozen ? 0 : 1;
+  });
+  window.addEventListener('omo:voice-want-on', () => {
+    userPaused = false;
+    reconnectAttempts = 0;
+    if (reconnectTimer) { clearTimeout(reconnectTimer); reconnectTimer = null; }
+    if (!connected && !connecting && typeof connectHandler === 'function') {
+      connectHandler();
+    }
+  });
+  window.addEventListener('omo:voice-want-off', () => {
+    userPaused = true;
+    if (reconnectTimer) { clearTimeout(reconnectTimer); reconnectTimer = null; }
+    if (connected || connecting) {
+      try { teardown(); } catch (err) { console.warn('[voice/off] teardown', err); }
+    }
+  });
+  window.addEventListener('omo:voice-mode', (e) => {
+    const m = e.detail?.mode;
+    diag(m === 'ptt' ? 'voice PTT · hold SPACE to talk · M to cycle'
+       : m === 'off' ? 'voice OFF · muted, no billing · M to cycle'
+       : 'voice ON · always-on live · M to cycle');
+  });
+
+  // Voice engine selector. Default is Gemini Live (the cloud realtime
+  // path that the rest of this file was written for). With ?engine=local
+  // we instead open a plain WebSocket to /voice/ws and let the server
+  // run the Whisper → Gemini Flash → edge-tts pipeline. The local path
+  // reuses every existing surface (PCM playback chain, mouth analyser,
+  // /tool dispatch, momo-ingest, sprite layer) — only the transport
+  // changes.
+  const VOICE_ENGINE = (() => {
+    try {
+      const q = new URLSearchParams(window.location.search).get('engine');
+      return q === 'local' ? 'local' : 'gemini_live';
+    } catch { return 'gemini_live'; }
+  })();
+  // Text-only launch mode: skip voice entirely (no mic prompt, no /session
+  // round-trip, no costly Live audio model). Triggered by `?text=1` on the
+  // URL (set by `npm run text`). The text overlay auto-opens at boot so
+  // the user lands directly in the chat box. Voice can still be summoned
+  // later by removing the param and refreshing.
+  const TEXT_ONLY_MODE = (() => {
+    try {
+      const q = new URLSearchParams(window.location.search);
+      return q.get('text') === '1' || q.get('mode') === 'text';
+    } catch { return false; }
+  })();
+  let voiceWs = null;
+
+  // Pre-warm: the server keeps a Gemini ephemeral token ready, but the
+  // token has a 2-min "start" window and is single-use. So we race the
+  // fetch + SDK import at page-load time and stash them here. If the user
+  // connects within ~90s the press-to-LIVE path is basically just mic
+  // permission + WS handshake. If they wait longer the prefetched token
+  // goes stale and connect() falls back to a live fetch.
+  let prefetchedSession = null, prefetchedAt = 0;
+  let prefetchInFlight = null;
+  let sdkPromise = null;
+  const PREFETCH_FRESH_MS = 90_000;
+
+  // Auto-reconnect state: exponential backoff with a cap. Reset to 0 on
+  // successful LIVE. Skipped entirely when the failure is "mic blocked"
+  // because no amount of retrying will unblock browser permission.
+  let reconnectAttempts = 0;
+  let reconnectTimer = null;
+  let micBlocked = false;
+  // Set when the server broadcasts a `system:shutdown` event (Ctrl+C on
+  // npm start). Suppresses the auto-reconnect loop so the browser doesn't
+  // immediately try to dial a dead /session endpoint while the user is
+  // shutting things down on purpose.
+  let serverShutdown = false;
+  // Set by the M-key freeze. Same job as serverShutdown but user-initiated
+  // and reversible — toggling M off clears it and re-dials.
+  let userPaused = false;
+  const RECONNECT_MAX = 8;
+  const RECONNECT_BASE_MS = 1000;
+  const RECONNECT_CAP_MS = 10_000;
+  function scheduleReconnect(reason) {
+    if (reconnectTimer || connected || connecting || micBlocked || serverShutdown || userPaused) return;
+    if (reconnectAttempts >= RECONNECT_MAX) {
+      diag('reconnect gave up after ' + RECONNECT_MAX + ' tries', true);
+      bootErrorState('connection lost — refresh');
+      return;
+    }
+    const delay = Math.min(RECONNECT_CAP_MS, RECONNECT_BASE_MS * Math.pow(2, reconnectAttempts));
+    reconnectAttempts += 1;
+    diag(`reconnect in ${Math.round(delay / 1000)}s (${reconnectAttempts}/${RECONNECT_MAX}) · ${reason}`);
+    reconnectTimer = setTimeout(() => {
+      reconnectTimer = null;
+      if (!connected && !connecting) connect();
+    }, delay);
+  }
+
+  function prefetchSession() {
+    prefetchInFlight = fetch('/session', { method: 'POST' })
+      .then((r) => r.ok ? r.json() : null)
+      .then((s) => {
+        if (s && s.token) { prefetchedSession = s; prefetchedAt = Date.now(); diag('token prewarm'); }
+        return s;
+      })
+      .catch(() => null /* silent — connect() will retry live */);
+    return prefetchInFlight;
+  }
+  function prefetchSdk() {
+    if (!sdkPromise) sdkPromise = import('https://esm.sh/@google/genai@1.50.1').catch((err) => {
+      sdkPromise = null; throw err;
+    });
+  }
+  // Kick both in parallel as soon as the page is interactive. The real
+  // mic-gated connect() happens later on click/space — by then these are
+  // already resolved. Skip entirely in text-only mode — no voice round-trip
+  // means no need for either.
+  if (!TEXT_ONLY_MODE) {
+    prefetchSession();
+    prefetchSdk();
+  }
+
+  // Auto-connect on load. Goal: the moment :8080 finishes loading, you
+  // can talk to Momo. Mic permission is persistent per-origin on
+  // localhost, so once granted this becomes fully hands-free across
+  // refreshes. If permission is still "prompt" we still fire connect()
+  // so the browser's permission dialog pops immediately rather than
+  // waiting for SPACE/tap. If denied, we stay quiet and let the user
+  // re-request via the usual SPACE/click path.
+  async function autoConnectOnLoad() {
+    if (TEXT_ONLY_MODE) {
+      diag('text-only mode · voice disabled');
+      setBodyState(null);
+      // Pop the glassmorphic chat overlay open as soon as it installs.
+      // text-overlay.js sets window.omoText on DOMContentLoaded, which may
+      // run before or after this function — poll briefly to cover both.
+      const tryOpen = () => {
+        if (window.omoText?.open) { window.omoText.open(); return true; }
+        return false;
+      };
+      if (!tryOpen()) {
+        let tries = 0;
+        const iv = setInterval(() => {
+          if (tryOpen() || ++tries > 40) clearInterval(iv);
+        }, 50);
+      }
+      return;
+    }
+    // Voice-mode gate: only the legacy 'on' mode opens Gemini Live on
+    // load. PTT waits for SPACE; OFF stays silent. Saves cost by default.
+    if (window.omoVoiceMode && !window.omoVoiceMode.shouldAutoConnect()) {
+      setBodyState(null);
+      // No connect phase → dismiss the boot splash so the cylinder is
+      // visible immediately. revealAppOnLive normally does this once
+      // Gemini's setupComplete arrives, but in PTT/OFF that never fires.
+      dismissBootSplash();
+      const m = window.omoVoiceMode.current;
+      diag(m === 'ptt'
+        ? 'voice PTT · hold SPACE to talk · M to cycle'
+        : 'voice OFF · press M to cycle modes');
+      return;
+    }
+    try {
+      if (navigator.permissions?.query) {
+        const status = await navigator.permissions.query({ name: 'microphone' });
+        if (status.state === 'denied') {
+          diag('auto-connect skipped (mic denied)');
+          micBlocked = true;
+          bootErrorState('enable mic to connect');
+          return;
+        }
+      }
+    } catch { /* permissions API missing — fall through and try anyway */ }
+    // Let the prewarm land first so connect() uses the prefetched token
+    // instead of firing a second /session request.
+    try { if (prefetchInFlight) await prefetchInFlight; } catch {}
+    if (connected || connecting) return;
+    diag('auto-connect');
+    connect();
+  }
+  autoConnectOnLoad();
+
+  function setBodyState(state) {
+    document.body.classList.remove('rt-connecting', 'rt-connected', 'rt-listening', 'rt-error');
+    if (state) document.body.classList.add(state);
+  }
+
+  let connectAttemptCount = 0;
+  async function connect() {
+    if (connecting || connected) {
+      diag(`connect skipped (already ${connected ? 'connected' : 'connecting'})`);
+      return;
+    }
+    if (VOICE_ENGINE === 'local') return connectLocal();
+    connecting = true; setBodyState('rt-connecting');
+    connectAttemptCount += 1;
+    diag(`connect attempt #${connectAttemptCount}`);
+    try {
+      if (prefetchedSession && Date.now() - prefetchedAt < PREFETCH_FRESH_MS) {
+        sessionInfo = prefetchedSession;
+        prefetchedSession = null; // single-use
+        diag('token ready (prewarm)');
+      } else {
+        diag('fetching token');
+        const r = await fetch('/session', { method: 'POST' });
+        if (!r.ok) throw new Error(`/session ${r.status}: ${await r.text()}`);
+        sessionInfo = await r.json();
+      }
+    } catch (err) {
+      diag('session failed: ' + err.message, true); setBodyState('rt-error');
+      connecting = false;
+      scheduleReconnect('session failed');
+      return;
+    }
+    if (!sessionInfo?.token) {
+      diag('no token', true); setBodyState('rt-error');
+      connecting = false;
+      scheduleReconnect('no token');
+      return;
+    }
+
+    let GoogleGenAI;
+    try {
+      prefetchSdk(); // no-op if already in flight
+      ({ GoogleGenAI } = await sdkPromise);
+    } catch (err) {
+      diag('sdk import failed: ' + err.message, true); setBodyState('rt-error');
+      connecting = false;
+      scheduleReconnect('sdk import');
+      return;
+    }
+
+    try { await setupAudio(); }
+    catch (err) {
+      diag('audio setup failed: ' + err.message, true); setBodyState('rt-error');
+      // Mic permission is a hard stop — the only path forward is the
+      // user granting mic access and refreshing. We surface that on the
+      // splash and stop the reconnect loop.
+      if (err?.name === 'NotAllowedError') {
+        micBlocked = true;
+        bootErrorState('enable mic to connect');
+      } else {
+        bootErrorState('mic unavailable');
+        teardown(); connecting = false;
+        scheduleReconnect('audio setup');
+        return;
+      }
+      teardown(); connecting = false;
+      return;
+    }
+
+    const ai = new GoogleGenAI({ apiKey: sessionInfo.token, httpOptions: { apiVersion: 'v1alpha' } });
+    try {
+      liveSession = await ai.live.connect({
+        model: sessionInfo.model, config: sessionInfo.setupConfig,
+        callbacks: {
+          onopen: () => diag('ws open'),
+          onmessage: (msg) => handleLiveMessage(msg),
+          onerror: (e) => { diag('ws error: ' + (e.message || e), true); setBodyState('rt-error'); },
+          onclose: (e) => {
+            const reason = e?.reason || ('code ' + (e?.code ?? '?'));
+            const isError = e?.code && e.code !== 1000;
+            if (connected || connecting) {
+              diag('ws closed: ' + reason, isError);
+              if (isError) setBodyState('rt-error');
+              teardown();
+              // Always-on: bring the session back up on its own. If the
+              // close was a clean 1000 (e.g. server told us to go) we
+              // still reconnect — that matches the user's "always
+              // working" expectation.
+              scheduleReconnect('ws closed');
+            }
+          },
+        },
+      });
+    } catch (err) {
+      diag('ws connect failed: ' + err.message, true); setBodyState('rt-error');
+      teardown(); connecting = false;
+      scheduleReconnect('ws connect');
+      return;
+    }
+    connecting = false; connected = true; setBodyState('rt-connected'); diag('LIVE');
+    startAgentNarrationHook();
+    // WS is open but Gemini may still be mid-setup. Don't reveal yet —
+    // wait for `setupComplete` (handled in handleLiveMessage). The
+    // watchdog force-closes the session if setup stalls, so dead
+    // sessions get recycled in ~4s instead of hanging for 8-10s.
+    // reconnectAttempts stays non-zero until setupComplete arrives —
+    // that way we don't infinitely re-try silently-dying sessions.
+    // Greeting is sent from the setupComplete branch — sending a user
+    // turn pre-setupComplete causes Gemini to close the session with
+    // "Operation is not implemented, or supported, or enabled".
+    armSetupCompleteWatchdog();
+  }
+
+  // ─── Local pipeline (Whisper → Gemini Flash text → edge-tts) ───────
+  // Same surface as Gemini Live from the cylinder's perspective: we
+  // open a WS, pump 16 kHz mic PCM up, receive 24 kHz PCM audio + tool
+  // calls + transcripts down, and dispatch tools through the existing
+  // /tool POST path (which handles every UI side effect already).
+  async function connectLocal() {
+    connecting = true; setBodyState('rt-connecting');
+    connectAttemptCount += 1;
+    diag(`connect[local] attempt #${connectAttemptCount}`);
+    try {
+      const r = await fetch('/voice/session', { method: 'POST' });
+      if (!r.ok) throw new Error(`/voice/session ${r.status}: ${await r.text()}`);
+      sessionInfo = await r.json();
+      sessionInfo.engine = 'local';
+    } catch (err) {
+      diag('voice session failed: ' + err.message, true); setBodyState('rt-error');
+      connecting = false;
+      scheduleReconnect('voice session');
+      return;
+    }
+
+    // Deps missing — surface the install hint on the splash and stop the
+    // reconnect loop. Hammering /voice/ws when whisper isn't installed
+    // just stalls the user behind a boot screen forever.
+    if (sessionInfo && sessionInfo.ready === false) {
+      const hint = sessionInfo.setup_hint || 'run ./bin/install-voice-deps.sh';
+      const detail = sessionInfo.setup_error || 'voice deps missing';
+      diag('voice deps missing: ' + detail, true);
+      setBodyState('rt-error');
+      bootErrorState(`voice deps missing — ${hint}`);
+      reconnectAttempts = RECONNECT_MAX;       // don't auto-retry; user must install + restart
+      connecting = false;
+      return;
+    }
+
+    try { await setupAudio(); }
+    catch (err) {
+      diag('audio setup failed: ' + err.message, true); setBodyState('rt-error');
+      if (err?.name === 'NotAllowedError') {
+        micBlocked = true;
+        bootErrorState('enable mic to connect');
+      } else {
+        bootErrorState('mic unavailable');
+        teardown(); connecting = false;
+        scheduleReconnect('audio setup');
+      }
+      return;
+    }
+
+    const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
+    const wsUrl = `${proto}//${location.host}${sessionInfo.ws_url || '/voice/ws'}`;
+    try {
+      voiceWs = new WebSocket(wsUrl);
+    } catch (err) {
+      diag('voice ws ctor failed: ' + err.message, true); setBodyState('rt-error');
+      teardown(); connecting = false;
+      scheduleReconnect('voice ws');
+      return;
+    }
+    voiceWs.onopen = () => diag('voice ws open');
+    voiceWs.onmessage = (e) => {
+      let msg; try { msg = JSON.parse(e.data); } catch { return; }
+      handleLocalVoiceMessage(msg);
+    };
+    voiceWs.onerror = (e) => { diag('voice ws error', true); setBodyState('rt-error'); };
+    voiceWs.onclose = (e) => {
+      const reason = e?.reason || ('code ' + (e?.code ?? '?'));
+      const isError = e?.code && e.code !== 1000;
+      if (connected || connecting) {
+        diag('voice ws closed: ' + reason, isError);
+        if (isError) setBodyState('rt-error');
+        teardown();
+        scheduleReconnect('voice ws closed');
+      }
+    };
+    connecting = false; connected = true; setBodyState('rt-connected'); diag('LIVE (local)');
+    startAgentNarrationHook();
+  }
+
+  function handleLocalVoiceMessage(msg) {
+    if (msg.type === 'ready') {
+      reconnectAttempts = 0;
+      revealAppOnLive('local pipeline ready');
+      return;
+    }
+    if (msg.type === 'audio' && typeof msg.pcm === 'string') {
+      const int16 = base64ToInt16(msg.pcm);
+      if (!avatar.userData.speaking) { avatar.userData.speaking = true; setBodyState('rt-connected'); }
+      enqueuePcmChunk(int16, msg.sample_rate || 24000);
+      return;
+    }
+    if (msg.type === 'speaking_start') {
+      avatar.userData.speaking = true; setBodyState('rt-connected'); return;
+    }
+    if (msg.type === 'speaking_end') {
+      const drain = Math.max(0, (playHead - (playCtx?.currentTime || 0)) * 1000);
+      setTimeout(() => { if (playingSources.length === 0) avatar.userData.speaking = false; }, drain + 60);
+      return;
+    }
+    if (msg.type === 'listening_start') { avatar.userData.listening = true; if (connected) setBodyState('rt-listening'); return; }
+    if (msg.type === 'listening_end')   { avatar.userData.listening = false; if (connected) setBodyState('rt-connected'); return; }
+    if (msg.type === 'tool_call') {
+      handleLocalToolCall(msg).catch((err) => diag('tool err: ' + err.message, true));
+      return;
+    }
+    if (msg.type === 'transcript') {
+      // Forward to momo-ingest in the same shape it expects from Gemini
+      // Live so the /hq LOG pane and /agents-grid ticker keep working.
+      ensureMomoIngest().then((ing) => {
+        if (!ing) return;
+        if (msg.role === 'user' && !msg.partial) ing.onLiveMessage({ serverContent: { inputTranscription: { text: msg.text } } });
+        if (msg.role === 'assistant' && !msg.partial) ing.onLiveMessage({ serverContent: { outputTranscription: { text: msg.text } } });
+      });
+      return;
+    }
+    if (msg.type === 'error') {
+      diag('voice err: ' + msg.message, true);
+      setBodyState('rt-error');
+      return;
+    }
+  }
+
+  async function handleLocalToolCall(msg) {
+    const { id, name, args } = msg;
+    diag('tool ⇠ local: ' + name);
+    const t0 = performance.now();
+    let output;
+    try {
+      const r = await fetch('/tool', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name, arguments: args || {} }) });
+      output = await r.json();
+    } catch (err) { output = { error: String(err) }; }
+    const ms = Math.round(performance.now() - t0);
+    diag(`tool ← ${name} · ${ms}ms`);
+    const result = output.result ?? output;
+    // Trigger the same client-side UI side-effects the Gemini Live path
+    // does (mount viz, highlight, dismiss, etc.). The simplest way is to
+    // dispatch to the existing handler — but that's coupled to the
+    // function-call shape, so we mirror the relevant ones here.
+    if (name === 'render_viz' && result?.viz_id && window.__holoChart) {
+      try { window.__holoChart.mount(result.viz_id, result.size || 'wide', { width: result.width, height: result.height, cached: !!result.cached }); } catch {}
+    } else if (name === 'highlight_viz' && result?.ok && window.__holoChart) {
+      try { window.__holoChart.highlight?.(result); } catch {}
+    } else if (name === 'dismiss_viz' && window.__holoChart) {
+      try { window.__holoChart.dismissAll?.(); } catch {}
+    }
+    if (voiceWs && voiceWs.readyState === WebSocket.OPEN) {
+      voiceWs.send(JSON.stringify({ type: 'tool_result', id, output: result }));
+    }
+  }
+
+  function sendOpeningGreeting() {
+    if (!liveSession || !connected) return;
+    if (window.__omoGreetingSent) return;
+    window.__omoGreetingSent = true;
+    try {
+      liveSession.sendClientContent({
+        turns: [{
+          role: 'user',
+          parts: [{
+            text:
+              '[SYSTEM · session opened] Speak this opening greeting now, in Simplified Chinese, ' +
+              'warm, cute and friendly tone, no preamble, no translation, no commentary — ' +
+              'just these exact words:\n\n' +
+              `"${OMO_OPENING_GREETING}"`,
+          }],
+        }],
+      });
+    } catch (err) {
+      diag('greeting send failed: ' + err.message);
+      window.__omoGreetingSent = false; // let the next attempt retry
+    }
+  }
+
+  function teardown() {
+    connected = false; connecting = false;
+    cancelSetupCompleteWatchdog();
+    stopAgentNarrationHook();
+    avatar.userData.speaking = false; avatar.userData.listening = false; avatar.userData.mouthDrive = null;
+    stopAllPlayback();
+    if (micNode) { try { micNode.port.onmessage = null; micNode.disconnect(); } catch {} micNode = null; }
+    if (liveSession) { try { liveSession.close(); } catch {} liveSession = null; }
+    if (voiceWs) { try { voiceWs.close(); } catch {} voiceWs = null; }
+    if (micStream) { micStream.getTracks().forEach((t) => t.stop()); micStream = null; }
+    if (micCtx) { try { micCtx.close(); } catch {} micCtx = null; }
+    if (playCtx) { try { playCtx.close(); } catch {} playCtx = null; }
+    cuteInput = null; analyser = null; analyserData = null; playHead = 0;
+    setBodyState(null);
+    // If the app was never revealed (i.e. we never reached LIVE on this
+    // session), reset the greeting flag so the next attempt re-sends it.
+    if (!appRevealed) window.__omoGreetingSent = false;
+  }
+
+  // ─── Agent narration hook ──────────────────────────────────────────
+  // When a background agent task completes, inject a short system message into
+  // Momo's Gemini Live session so she narrates the result in her voice.
+  // Same /omo/ws socket /hq uses — no new transport.
+  let agentNarrationWs = null;
+  const narratedTaskIds = new Set();
+
+  function startAgentNarrationHook() {
+    if (agentNarrationWs || location.protocol === 'file:') return;
+    try {
+      const url = new URL('/omo/ws', location.href);
+      url.protocol = url.protocol === 'https:' ? 'wss:' : 'ws:';
+      agentNarrationWs = new WebSocket(url.href);
+      agentNarrationWs.addEventListener('message', (evt) => {
+        let msg;
+        try { msg = JSON.parse(evt.data); } catch { return; }
+        // Server shutdown signal — drop the direct Gemini Live socket and
+        // stop the reconnect loop so the browser doesn't keep streaming to
+        // Google after Ctrl+C on the local server.
+        if (msg.type === 'event' && msg.event?.source === 'system' && msg.event?.kind === 'shutdown') {
+          serverShutdown = true;
+          diag('server stopped · closing Gemini Live');
+          if (reconnectTimer) { clearTimeout(reconnectTimer); reconnectTimer = null; }
+          try { liveSession?.close(); } catch {}
+          try { agentNarrationWs?.close(); } catch {}
+          return;
+        }
+        if (msg.type !== 'event' || msg.event?.source !== 'agents') return;
+        const ev = msg.event;
+        if (!ev.data) return;
+        if (ev.kind === 'task_complete') {
+          if (narratedTaskIds.has(ev.data.id)) return;
+          narratedTaskIds.add(ev.data.id);
+          narrateTaskResult(ev.data);
+        } else if (ev.kind === 'task_progress' && ev.data.narrate === true) {
+          narrateTaskProgress(ev.data);
+        }
+      });
+      agentNarrationWs.addEventListener('close', () => { agentNarrationWs = null; });
+      agentNarrationWs.addEventListener('error', () => { try { agentNarrationWs?.close(); } catch {} });
+    } catch (err) {
+      diag('narration hook failed: ' + err.message);
+    }
+  }
+
+  function stopAgentNarrationHook() {
+    if (agentNarrationWs) { try { agentNarrationWs.close(); } catch {} agentNarrationWs = null; }
+  }
+
+  function narrateTaskResult(task) {
+    if (!liveSession || !connected) return;
+    const isDone = task.status === 'done';
+    const isErr = task.status === 'error';
+    const body = isDone
+      ? (task.result || '(no additional detail)').toString().replace(/\s+/g, ' ').slice(0, 600)
+      : (task.error || '(unknown reason)').toString().replace(/\s+/g, ' ').slice(0, 600);
+    const label = (task.label || task.task || task.id).toString().slice(0, 80);
+    const secs = task.durationMs ? Math.round(task.durationMs / 1000) : null;
+    const durLine = secs != null ? ` (took ~${secs}s)` : '';
+    const verb = isDone ? 'finished' : (isErr ? 'errored out' : 'returned');
+    // Browser tasks ship a render-ready report_card payload in the dataset
+    // store. Hand the id to Momo so she can mount it on the hologram if
+    // the user wants to keep the answer visible.
+    const findingLine = task.findingId
+      ? `\nThere's a ready report_card dataset id: ${task.findingId}. If the user asks to "keep this", "show me the card", or "put it on stage", call render_viz({ chart_type:"report_card", data_refs:["${task.findingId}"], intent:"${(task.label || 'browser finding').slice(0, 30)}" }). Otherwise just narrate the result.`
+      : '';
+    // Browser tasks get auto-archived to a Google Doc — let Momo mention
+    // that the full text is saved (so the user knows where it lives), but
+    // tell her to keep it as a one-line aside, not the headline.
+    const docLine = task.docUrl
+      ? `\nThe full text was archived to a Google Doc: ${task.docUrl}. Mention this as a one-line aside after the result (not the headline) — phrase it naturally in whatever language you're speaking.`
+      : (task.docError ? `\n(Aside: this one didn't get archived to a Doc — reason: ${task.docError}. Only explain if the user asks; don't volunteer it.)` : '');
+    const text =
+      `[system event · background agent returned] Task "${label}" ${verb}${durLine}.\n` +
+      `From ${task.agentId || 'main'}: ${body}` +
+      findingLine + docLine + `\n` +
+      `Narrate this back to the user in your omo voice — one or two short, lively sentences. ` +
+      `**LANGUAGE: respond in the SAME language the user just spoke to you** (English if they spoke English, Simplified Chinese if they spoke Chinese — never switch on them, never default to Chinese when the user is in English). ` +
+      `If it's an error, tease it gently and offer to retry. Don't reread the whole result — pick the one or two most important points.`;
+    try {
+      liveSession.sendClientContent({ turns: [{ role: 'user', parts: [{ text }] }] });
+    } catch (err) {
+      console.warn('[narration] send failed', err);
+    }
+  }
+
+  function narrateTaskProgress(task) {
+    if (!liveSession || !connected) return;
+    const label = (task.label || task.task || task.id).toString().slice(0, 80);
+    const elapsedS = task.startedAt ? Math.max(0, Math.round((Date.now() - task.startedAt) / 1000)) : null;
+    const elapsedLine = elapsedS != null ? ` (running ~${elapsedS}s)` : '';
+    const turn = task.turn || null;
+    const summary = (task.progressSummary || '').toString().replace(/\s+/g, ' ').slice(0, 240);
+
+    // Always tell Momo to mirror the user's last spoken language. Without
+    // this, Momo defaults to Simplified Chinese (her base persona) even if
+    // the user just spoke English to her.
+    const langRule =
+      `**LANGUAGE: respond in the SAME language the user just spoke to you** ` +
+      `(English if they spoke English, Simplified Chinese if Chinese — never switch on them, never default to Chinese when the user is in English).`;
+
+    let text;
+    if (turn && turn.kind === 'tool_use') {
+      const tool = turn.toolName || 'tool';
+      const input = (turn.toolInput || '').toString().slice(0, 180);
+      text =
+        `[system event · background agent progress] "${label}" still running${elapsedLine}.\n` +
+        `The agent just invoked tool: ${tool} (input: ${input || '—'})\n` +
+        `Narrate this in your omo voice — ONE very short sentence that naturally drops in the tool / file / keyword (e.g. EN: "ooh she's grepping for 'emit' rn", "mm she's Reading that sanitiser file", "okay she's running npm test in Bash"; ZH: "诶她在 grep 'emit' 呢", "嗯~ 在 Read 那个 sanitiser 文件", "哦她在 Bash 跑 npm test"). Don't reread the JSON args — pick the juiciest keyword. ` + langRule;
+    } else if (turn && turn.kind === 'tool_result') {
+      const snippet = (turn.snippet || '').toString().slice(0, 200);
+      const errFlag = turn.isError ? ' (this one was an error)' : '';
+      text =
+        `[system event · background agent progress] "${label}" still running${elapsedLine}.\n` +
+        `A tool just returned${errFlag}: ${snippet || '—'}\n` +
+        `Narrate "got the result, moving on" in your omo voice — ONE very short sentence (EN: "got it, keep thinking~", "okay results in, on we go"; ZH: "嗯看到了，在继续", "okay 拿到结果了，接着想哈"). Don't reread the snippet. ` + langRule;
+    } else if (turn && turn.kind === 'text') {
+      const said = (turn.text || '').toString().slice(0, 300);
+      text =
+        `[system event · background agent progress] "${label}" still running${elapsedLine}.\n` +
+        `The agent just wrote (her own words — DON'T quote): "${said}"\n` +
+        `Relay the core of what she said in your own voice — one or two short sentences, no quotes (EN: "ooh she's saying that XX bit's a problem", "mm she found YY"; ZH: "哦她说 XX 那块有点问题~", "嗯她发现了 YY"). Don't echo verbatim. ` + langRule;
+    } else if (summary) {
+      text =
+        `[system event · background agent progress] "${label}" still running${elapsedLine}.\n` +
+        `Current step: ${summary}\n` +
+        `Narrate this little update in your omo voice — ONE very short sentence (EN: "ehh she's poking at XX rn", "mm still analysing"; ZH: "欸~她正在看 XX 这块呢", "嗯嗯还在分析中"). Don't echo, don't promise a result, just let the user know you're watching. ` + langRule;
+    } else {
+      text =
+        `[system event · background agent heartbeat] "${label}" still running${elapsedLine}, no fresh news.\n` +
+        `Reassure the user in your omo voice — ONE very short sentence (EN: "still on it~ hang tight", "she's eyes-on, no rush"; ZH: "还在哦~稍等一下下", "她盯着呢，别急"). Don't apologise; no "sorry to keep you waiting" fluff. ` + langRule;
+    }
+
+    try {
+      liveSession.sendClientContent({ turns: [{ role: 'user', parts: [{ text }] }] });
+    } catch (err) {
+      console.warn('[narration] progress send failed', err);
+    }
+  }
+
+  async function setupAudio() {
+    micStream = await navigator.mediaDevices.getUserMedia({ audio: true });
+    micCtx = new AudioContext({ sampleRate: 16000 });
+    await micCtx.audioWorklet.addModule('/pcm-worklet.js');
+    const src = micCtx.createMediaStreamSource(micStream);
+    micNode = new AudioWorkletNode(micCtx, 'pcm16-worklet');
+    micNode.port.onmessage = (e) => {
+      if (!connected) return;
+      const b64 = arrayBufferToBase64(e.data);
+      try {
+        if (VOICE_ENGINE === 'local') {
+          if (voiceWs && voiceWs.readyState === WebSocket.OPEN) {
+            voiceWs.send(JSON.stringify({ type: 'audio', pcm: b64 }));
+          }
+        } else {
+          if (!liveSession) return;
+          liveSession.sendRealtimeInput({ audio: { data: b64, mimeType: 'audio/pcm;rate=16000' } });
+        }
+      } catch (err) { console.warn(err); }
+    };
+    src.connect(micNode);
+    playCtx = new AudioContext({ sampleRate: 24000 });
+    playHead = playCtx.currentTime;
+    cuteInput = buildCuteChain(playCtx);
+    // Keepalive: a near-silent ConstantSource → destination keeps playCtx
+    // perpetually non-idle and signals to Chrome that the page is producing
+    // audio. Background tabs flagged as audible aren't suspended/throttled,
+    // so Momo keeps speaking and listening even when the tab is occluded
+    // or backgrounded. Gain is ~-100 dB — inaudible but non-zero.
+    try {
+      const keepGain = playCtx.createGain();
+      keepGain.gain.value = 0.00001;
+      const keepSrc = playCtx.createConstantSource();
+      keepSrc.connect(keepGain).connect(playCtx.destination);
+      keepSrc.start();
+    } catch (err) { console.warn('[audio] keepalive failed', err); }
+  }
+
+  // Browsers suspend AudioContexts when the tab is backgrounded (and on
+  // some heavy iframe loads). Without this resume on focus, Momo stays
+  // connected to Gemini Live but her PCM playback queue silently freezes
+  // — looks like a crash from the user's side. This wakes the contexts
+  // up the moment focus returns, and resyncs the play head so the next
+  // chunk doesn't try to start before currentTime (which would silently
+  // drop). Also retried on click/keydown as a belt-and-braces fallback.
+  async function resumeAudioContexts(reason) {
+    let resumed = [];
+    try {
+      if (playCtx && playCtx.state === 'suspended') {
+        await playCtx.resume();
+        playHead = playCtx.currentTime;
+        resumed.push('play');
+      }
+    } catch (err) { console.warn('[audio] playCtx resume err', err); }
+    try {
+      if (micCtx && micCtx.state === 'suspended') {
+        await micCtx.resume();
+        resumed.push('mic');
+      }
+    } catch (err) { console.warn('[audio] micCtx resume err', err); }
+    if (resumed.length) {
+      diag(`audio resumed (${resumed.join('+')}) · ${reason}`);
+    }
+  }
+  document.addEventListener('visibilitychange', () => {
+    if (document.visibilityState === 'visible') {
+      resumeAudioContexts('visibility');
+    } else {
+      // Don't pre-emptively diag — Chrome flips visibility to hidden for
+      // many benign reasons (occlusion, Spaces switch, another tab active)
+      // and the keepalive ConstantSource keeps audio running through most
+      // of them. Only diag if a context actually suspends shortly after.
+      setTimeout(() => {
+        const states = [];
+        if (playCtx && playCtx.state === 'suspended') states.push('play');
+        if (micCtx  && micCtx.state  === 'suspended') states.push('mic');
+        if (states.length) diag(`audio suspended (${states.join('+')}) · hidden`);
+      }, 750);
+    }
+  });
+  window.addEventListener('focus',     () => resumeAudioContexts('focus'));
+  window.addEventListener('pageshow',  () => resumeAudioContexts('pageshow'));
+  window.addEventListener('click',     () => resumeAudioContexts('click'),     { passive: true });
+  window.addEventListener('keydown',   () => resumeAudioContexts('keydown'),   { passive: true });
+
+  // Cute-voice chain: notch + highshelf for brightness, then dry + chorus
+  // tap + light angelic reverb. Matches /reflector so /holo sounds the
+  // same regardless of how the hologram is projected.
+  function buildCuteChain(ctx) {
+    const input = ctx.createGain();
+
+    const notch = ctx.createBiquadFilter();
+    notch.type = 'peaking'; notch.frequency.value = 260; notch.Q.value = 0.9; notch.gain.value = -2.5;
+
+    const bright = ctx.createBiquadFilter();
+    bright.type = 'highshelf'; bright.frequency.value = 3200; bright.gain.value = 4;
+
+    input.connect(notch).connect(bright);
+
+    const dry = ctx.createGain();
+    dry.gain.value = 0.95;
+    bright.connect(dry).connect(ctx.destination);
+
+    // Chorus tap — short modulated delay blended back in.
+    const d1 = ctx.createDelay(0.05);
+    d1.delayTime.value = 0.014;
+    const lfo1 = ctx.createOscillator();
+    const lfo1g = ctx.createGain();
+    lfo1.frequency.value = 1.3;
+    lfo1g.gain.value = 0.0028;
+    lfo1.connect(lfo1g).connect(d1.delayTime);
+    lfo1.start();
+    const chorusG = ctx.createGain();
+    chorusG.gain.value = 0.22;
+    bright.connect(d1).connect(chorusG).connect(ctx.destination);
+
+    // Light angelic reverb.
+    const conv = ctx.createConvolver();
+    conv.buffer = makeImpulse(ctx, 0.7, 2.5);
+    const revG = ctx.createGain();
+    revG.gain.value = 0.14;
+    bright.connect(conv).connect(revG).connect(ctx.destination);
+
+    analyser = ctx.createAnalyser();
+    analyser.fftSize = 512;
+    analyser.smoothingTimeConstant = 0.6;
+    bright.connect(analyser);
+    analyserData = new Uint8Array(analyser.frequencyBinCount);
+
+    return input;
+  }
+
+  function makeImpulse(ctx, duration, decay) {
+    const len = Math.floor(ctx.sampleRate * duration);
+    const buf = ctx.createBuffer(2, len, ctx.sampleRate);
+    for (let c = 0; c < 2; c++) {
+      const ch = buf.getChannelData(c);
+      for (let i = 0; i < len; i++) {
+        ch[i] = (Math.random() * 2 - 1) * Math.pow(1 - i / len, decay);
+      }
+    }
+    return buf;
+  }
+
+  function sampleMouth() {
+    if (!analyser || !analyserData) return null;
+    analyser.getByteFrequencyData(analyserData);
+    let sum = 0, n = 0;
+    for (let i = 2; i < Math.min(48, analyserData.length); i++) { sum += analyserData[i]; n++; }
+    const avg = sum / (n * 255);
+    return Math.min(1, Math.pow(avg * 1.6, 0.9));
+  }
+
+  function enqueuePcmChunk(int16, sampleRate) {
+    if (!playCtx || !cuteInput) return;
+    const buf = playCtx.createBuffer(1, int16.length, sampleRate);
+    const ch = buf.getChannelData(0);
+    for (let i = 0; i < int16.length; i++) ch[i] = int16[i] / 0x8000;
+    const src = playCtx.createBufferSource(); src.buffer = buf; src.connect(cuteInput);
+    const startAt = Math.max(playHead, playCtx.currentTime + 0.02);
+    src.start(startAt); playHead = startAt + buf.duration;
+    playingSources.push(src);
+    src.onended = () => { playingSources = playingSources.filter((s) => s !== src); };
+  }
+
+  function stopAllPlayback() {
+    playingSources.forEach((s) => { try { s.stop(); } catch {} });
+    playingSources = [];
+    if (playCtx) playHead = playCtx.currentTime;
+  }
+
+  // Momo ingest — pushes finalized user + Momo transcripts onto the Data
+  // Core ring so /hq's LOG pane and /agents-grid's ticker see them live.
+  // Lazy-attached on first live message so we can pass the resolved
+  // sessionInfo (for model/voice metadata) into session_start.
+  let momoIngest = null;
+  async function ensureMomoIngest() {
+    if (momoIngest) return momoIngest;
+    try {
+      const mod = await import('./momo-ingest.js');
+      momoIngest = mod.attachMomoIngest({
+        page: 'cylinder',
+        getSession: () => ({ model: sessionInfo?.model, voice: sessionInfo?.voice }),
+      });
+    } catch (err) { diag('momo-ingest import failed: ' + err.message); }
+    return momoIngest;
+  }
+
+  // Momo reactions — taps the same Gemini Live transcript stream and maps
+  // laugh/praise/concern keywords to avatar.reactX + cute idle actions.
+  // Throttled internally so a long "hahaha" fires one giggle, not thirty.
+  let momoReactions = null;
+  async function ensureMomoReactions() {
+    if (momoReactions) return momoReactions;
+    try {
+      const mod = await import('./momo-reactions.js');
+      momoReactions = mod.attachMomoReactions({ avatar });
+    } catch (err) { diag('momo-reactions import failed: ' + err.message); }
+    return momoReactions;
+  }
+
+  function handleLiveMessage(msg) {
+    if (msg.setupComplete) {
+      // Real "session ready to chat" signal. Only now do we dismiss the
+      // splash, clear the reconnect backoff, and call this attempt
+      // healthy — LIVE alone means nothing if setup never finishes.
+      cancelSetupCompleteWatchdog();
+      reconnectAttempts = 0;
+      revealAppOnLive('setup complete');
+      // Safe to send client turns now — Gemini closes the session with
+      // "Operation is not implemented" if you send one before this.
+      sendOpeningGreeting();
+      return;
+    }
+    const sc = msg.serverContent;
+    if (sc) {
+      if (sc.modelTurn?.parts) {
+        for (const part of sc.modelTurn.parts) {
+          const inline = part.inlineData;
+          if (inline && typeof inline.data === 'string' && /audio\/pcm/i.test(inline.mimeType || '')) {
+            const rate = extractRate(inline.mimeType) || 24000;
+            const int16 = base64ToInt16(inline.data);
+            if (!avatar.userData.speaking) { avatar.userData.speaking = true; setBodyState('rt-connected'); }
+            enqueuePcmChunk(int16, rate);
+          }
+        }
+      }
+      if (sc.interrupted) { stopAllPlayback(); avatar.userData.speaking = false; }
+      if (sc.generationComplete || sc.turnComplete) {
+        const drain = Math.max(0, (playHead - (playCtx?.currentTime || 0)) * 1000);
+        setTimeout(() => { if (playingSources.length === 0) avatar.userData.speaking = false; }, drain + 60);
+      }
+    }
+    const activity = msg.serverContent?.inputActivity || msg.inputActivity;
+    if (activity?.start) { avatar.userData.listening = true; if (connected) setBodyState('rt-listening'); }
+    if (activity?.end)   { avatar.userData.listening = false; if (connected) setBodyState('rt-connected'); }
+    if (msg.toolCall?.functionCalls) {
+      // Log the moment Gemini Live tells us to call a tool. If the next
+      // line ([cylinder] tool: …) is slow to follow, the main thread is
+      // starved (likely by a heavy iframe — agents-grid + Browserbase
+      // devtools is the usual culprit). Compare timestamps in the
+      // server log to know whether it's a model-side delay or browser-
+      // side starvation.
+      for (const call of msg.toolCall.functionCalls) {
+        diag(`tool ⇠ Gemini: ${call.name}`);
+        handleFunctionCall(call);
+      }
+    }
+    ensureMomoIngest().then((ing) => ing && ing.onLiveMessage(msg));
+    ensureMomoReactions().then((r) => r && r.onLiveMessage(msg));
+  }
+
+  async function handleFunctionCall(call) {
+    const { id, name, args } = call;
+    diag('tool: ' + name);
+    const t0 = performance.now();
+    let output;
+    try {
+      const r = await fetch('/tool', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name, arguments: args || {} }) });
+      output = await r.json();
+    } catch (err) { output = { error: String(err) }; }
+    const ms = Math.round(performance.now() - t0);
+    const result = output.result ?? output;
+    const errTag = output && output.error ? ` ✗ ${String(output.error).slice(0, 80)}` : '';
+    diag(`tool ← ${name} · ${ms}ms${errTag}`);
+
+    if (name === 'render_viz' && result && result.viz_id && window.__holoChart) {
+      try {
+        window.__holoChart.mount(
+          result.viz_id,
+          result.size || 'wide',
+          { width: result.width, height: result.height, cached: !!result.cached },
+        );
+      } catch (err) { console.warn('[viz] mount err', err); }
+    } else if (name === 'highlight_viz' && result && result.ok && window.__holoChart) {
+      try {
+        window.__holoChart.highlight({
+          vizId: result.viz_id,
+          dataIndex: result.data_index,
+          seriesIndex: result.series_index,
+          label: result.label,
+        });
+      } catch (err) { console.warn('[viz] highlight err', err); }
+    } else if (name === 'dismiss_viz' && result && result.ok && window.__holoChart) {
+      try { window.__holoChart.dismount(result.viz_id || undefined); }
+      catch (err) { console.warn('[viz] dismiss err', err); }
+    } else if (result && result.kind === 'pane' && result.url && result.ok !== false && window.__holoPane) {
+      // Any tool that returns `{ kind: 'pane', url, ... }` mounts as a
+      // full-stage pane. Covers show_pane, show_preview, and any future
+      // pane-returning tools without per-name special-casing. The
+      // pane-layer itself refuses non-internal URLs as a safety net.
+      try {
+        window.__holoPane.mount({
+          url: result.url,
+          title: result.title,
+          page: result.page,
+          projectable_id: result.projectable_id,
+          slot: result.slot,
+          view: result.view,
+          filter: result.filter,
+        });
+      } catch (err) { console.warn('[pane] mount err', err); }
+    } else if (name === 'meta_dashboard_command' && result && result.ok && result.command && window.__holoPane) {
+      // Voice sort/filter on the Meta dashboard. Forward the command into
+      // whichever HQ iframe is currently mounted; if none is open, the
+      // model should pair this with show_pane(slot=meta) first.
+      try { window.__holoPane.forwardMessage({ type: 'omo.metaCommand', command: result.command }); }
+      catch (err) { console.warn('[pane] meta command forward err', err); }
+    // Preview voice-nav commands no longer ride the tool-result path —
+    // they're pushed from the server via /omo/preview/ws (see
+    // openPreviewBus above). The tool's result IS the bridge's truthful
+    // ack and contains { ok, result, error, suggestions } for the model
+    // to narrate. No forwarding needed here.
+    } else if (result && result.pane && result.pane.url && window.__holoPane) {
+      // Generic pane-hint: any tool can return { pane: { url, title, page } }
+      // to take over the stage after it succeeds. Used by create/read/
+      // append_google_doc so the doc opens inside the hologram without a
+      // separate show_pane call. pane-layer refuses non-internal URLs, so
+      // this path stays safe even if a tool returns junk.
+      try {
+        window.__holoPane.mount({
+          url: result.pane.url,
+          title: result.pane.title,
+          page: result.pane.page || 'detail',
+        });
+      } catch (err) { console.warn('[pane] auto-mount err', err); }
+    } else if (name === 'dismiss_pane' && result && result.ok && window.__holoPane) {
+      try { window.__holoPane.dismount(); }
+      catch (err) { console.warn('[pane] dismiss err', err); }
+    } else if (name === 'open_hq_detail' && result && result.ok) {
+      // Voice-drive: open a specific card (email / charge / campaign /
+      // file) inside /hq. Two paths:
+      //   - HQ pane already open → forward via postMessage (instant).
+      //   - HQ not mounted → mount with a deep-link URL so hq.html
+      //     self-opens the reader on boot. No timing race.
+      try {
+        const payload = { panel: result.panel, kind: result.kind, id: result.id };
+        const forwarded = window.__omoForwardOpenDetail?.(payload);
+        if (!forwarded && window.__holoPane) {
+          const url = '/hq?focus=' + encodeURIComponent(result.panel)
+                    + '&kind=' + encodeURIComponent(result.kind || '')
+                    + '&open=' + encodeURIComponent(result.id);
+          window.__holoPane.mount({ url, title: 'HQ', page: 'hq', slot: result.panel });
+        }
+      } catch (err) { console.warn('[pane] open_hq_detail err', err); }
+    }
+
+    if (!liveSession) return;
+    try { liveSession.sendToolResponse({ functionResponses: [{ id, name, response: { result } }] }); }
+    catch (err) { console.warn(err); }
+  }
+
+  function base64ToInt16(b64) {
+    const bin = atob(b64); const len = bin.length;
+    const bytes = new Uint8Array(len);
+    for (let i = 0; i < len; i++) bytes[i] = bin.charCodeAt(i);
+    return new Int16Array(bytes.buffer, bytes.byteOffset, Math.floor(len / 2));
+  }
+  function arrayBufferToBase64(buf) {
+    const bytes = new Uint8Array(buf); let s = '';
+    for (let i = 0; i < bytes.length; i++) s += String.fromCharCode(bytes[i]);
+    return btoa(s);
+  }
+  function extractRate(mime) { const m = /rate=(\d+)/i.exec(mime || ''); return m ? parseInt(m[1], 10) : null; }
+
+  // Always-on: no toggle, no user-facing disconnect. The named handler
+  // is kept so text-chat's existing import still resolves, but it only
+  // ever starts a session.
+  async function ensureConnected() {
+    if (TEXT_ONLY_MODE) return; // text mode: no voice connection, ever
+    if (connected || connecting) return;
+    await connect();
+  }
+  connectHandler = ensureConnected;
+  diag('ready · 1/2/3/4 mode · C calibrate · T test');
+
+  // ─── Render loop ───────────────────────────────────────────────────
+  const clock = new THREE.Clock();
+  renderer.setAnimationLoop(() => {
+    const dt = clock.getDelta();
+    const t = clock.elapsedTime;
+    updateScene(t, dt);
+    avatar.userData.mouthDrive = avatar.userData.speaking ? sampleMouth() : null;
+    if (!frozen) updateAvatar(avatar, t, dt);
+    // In 360° / multi-view modes we suppress the sway — pano360 is
+    // walk-around on a physical cylinder, test360 is a flat front/back
+    // diptych, and 4-face renders four cameras at fixed cardinal azimuths.
+    // A swaying body would make the four (or two, or sixteen) views
+    // disagree about which way is "front", smearing the illusion.
+    const splitActive = params.test360 && !warpPass.enabled;
+    const facesActive = warpPass.enabled && params.faces > 1 && !params.pano360;
+    if (!frozen) {
+      avatar.rotation.y = (params.pano360 || splitActive || facesActive)
+        ? 0
+        : Math.sin(t * 0.35) * 0.45;
+    }
+    // Render the N-view panorama / 4-face strips BEFORE the composer so
+    // the warp pass samples fresh textures this frame.
+    if (params.pano360) renderPanorama();
+    else if (facesActive) renderFaces();
+
+    if (splitActive) {
+      // Flat-monitor "friend in 360" preview. Render the scene twice to
+      // the canvas — front camera on the left half, back camera on the
+      // right — using scissor so each half is framed to its own aspect.
+      // Composer/bloom are bypassed here; the hologram scene's own glow
+      // carries enough atmosphere, and bypassing avoids a second composer.
+      // When rotateSides is on the cameras already have a rolled up
+      // vector applied via applyOrbit / applyBackOrbit, so the pedestal
+      // appears on the right edge of each half instead of the bottom.
+      const w = window.innerWidth, h = window.innerHeight;
+      const halfW = Math.floor(w / 2);
+      renderer.setScissorTest(true);
+      renderer.setViewport(0, 0, halfW, h);
+      renderer.setScissor(0, 0, halfW, h);
+      renderer.render(renderPass.scene, camera);
+      renderer.setViewport(halfW, 0, w - halfW, h);
+      renderer.setScissor(halfW, 0, w - halfW, h);
+      renderer.render(renderPass.scene, backCamera);
+      renderer.setScissorTest(false);
+      renderer.setViewport(0, 0, w, h);
+    } else {
+      composer.render();
+    }
+  });
+</script>
+</body>
+</html>

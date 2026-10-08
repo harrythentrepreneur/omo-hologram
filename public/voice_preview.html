@@ -1,0 +1,304 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <title>Gemini Voice Preview · 30 prebuilt voices</title>
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <script type="module" src="/text-overlay.js"></script>
+  <script src="/voice-mode.js"></script>
+  <style>
+    :root {
+      --bg: #0a0f14;
+      --panel: #0f1621;
+      --panel-2: #111a26;
+      --ink: #e8f3ff;
+      --dim: #7d94ad;
+      --line: #1c2a3b;
+      --accent: #7cf5c8;
+      --pink: #ff7cbf;
+      --blue: #5ab8ff;
+      --warn: #ffb86b;
+    }
+    * { box-sizing: border-box; }
+    html, body {
+      margin: 0;
+      background: radial-gradient(ellipse at top, #0c1824 0%, #050810 60%);
+      color: var(--ink);
+      font: 14px/1.45 ui-monospace, 'SF Mono', 'Menlo', monospace;
+      min-height: 100%;
+    }
+    header {
+      padding: 24px 32px 16px;
+      border-bottom: 1px solid var(--line);
+      display: flex;
+      flex-wrap: wrap;
+      gap: 16px;
+      align-items: flex-end;
+    }
+    h1 { margin: 0; font-size: 18px; letter-spacing: 0.08em; text-transform: uppercase; color: var(--accent); }
+    .sub { color: var(--dim); font-size: 12px; }
+    main { padding: 20px 32px 64px; }
+
+    .controls {
+      display: grid;
+      gap: 10px;
+      grid-template-columns: 1fr auto auto;
+      align-items: center;
+      margin-bottom: 24px;
+      padding: 14px 16px;
+      background: var(--panel);
+      border: 1px solid var(--line);
+      border-radius: 10px;
+    }
+    label { color: var(--dim); font-size: 11px; letter-spacing: 0.08em; text-transform: uppercase; display: block; margin-bottom: 6px; }
+    textarea, select, button {
+      font: inherit;
+      color: var(--ink);
+      background: var(--panel-2);
+      border: 1px solid var(--line);
+      border-radius: 6px;
+      padding: 8px 10px;
+      outline: none;
+    }
+    textarea { width: 100%; min-height: 64px; resize: vertical; }
+    textarea:focus, select:focus { border-color: var(--accent); }
+    button {
+      cursor: pointer;
+      background: var(--panel-2);
+      transition: border-color .15s, color .15s, background .15s;
+    }
+    button:hover { border-color: var(--accent); color: var(--accent); }
+    button:disabled { opacity: .5; cursor: wait; }
+
+    .preset-row { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }
+    .preset-row button { font-size: 11px; padding: 4px 8px; color: var(--dim); }
+
+    .grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+      gap: 10px;
+    }
+    .card {
+      background: var(--panel);
+      border: 1px solid var(--line);
+      border-radius: 10px;
+      padding: 12px 14px;
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+      position: relative;
+      transition: border-color .15s, background .15s;
+    }
+    .card:hover { border-color: #2b3d54; }
+    .card.playing {
+      border-color: var(--accent);
+      background: linear-gradient(180deg, rgba(124,245,200,.08), var(--panel));
+    }
+    .card.loading {
+      border-color: var(--blue);
+    }
+    .card.error { border-color: var(--warn); }
+    .card-top { display: flex; justify-content: space-between; align-items: baseline; gap: 10px; }
+    .name { font-size: 15px; font-weight: 600; letter-spacing: 0.02em; }
+    .vibe { color: var(--dim); font-size: 11px; text-transform: uppercase; letter-spacing: 0.08em; }
+    .card button {
+      width: 100%;
+      padding: 8px 10px;
+      font-size: 12px;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+    }
+    .card .status {
+      color: var(--dim);
+      font-size: 11px;
+      min-height: 14px;
+    }
+    .card.playing .status { color: var(--accent); }
+    .card.loading .status { color: var(--blue); }
+    .card.error .status { color: var(--warn); }
+
+    .footer {
+      margin-top: 24px;
+      color: var(--dim);
+      font-size: 11px;
+    }
+    code { background: var(--panel-2); padding: 1px 6px; border-radius: 4px; color: var(--accent); }
+  </style>
+</head>
+<body>
+  <header>
+    <div>
+      <h1>Gemini prebuilt voices · audition</h1>
+      <div class="sub">Pick the one that fits Momo, then set <code>GEMINI_VOICE=&lt;name&gt;</code> in <code>.env</code>.</div>
+    </div>
+    <div class="sub" id="meta"></div>
+  </header>
+
+  <main>
+    <div class="controls">
+      <div>
+        <label for="text">Sample text</label>
+        <textarea id="text" maxlength="400">嘿嘿你好呀~我是 omo，你的专属小助理。今天的 Stripe 跑得不错哦，要不要我给你拉张图看看？</textarea>
+        <div class="preset-row" id="presets"></div>
+      </div>
+      <div>
+        <label>&nbsp;</label>
+        <button id="stop">◼ stop</button>
+      </div>
+      <div>
+        <label>&nbsp;</label>
+        <button id="playAll">▶ play all</button>
+      </div>
+    </div>
+
+    <div class="grid" id="grid"></div>
+
+    <div class="footer">
+      Output is 24 kHz PCM wrapped as WAV. Samples are cached server-side for ~1 h per (voice, text) pair, so re-clicking is instant.
+      Default voice is currently <code id="current-voice">Leda</code> (in <code>src/session.js</code>).
+    </div>
+  </main>
+
+  <script>
+    const grid = document.getElementById('grid');
+    const textEl = document.getElementById('text');
+    const stopBtn = document.getElementById('stop');
+    const playAllBtn = document.getElementById('playAll');
+    const meta = document.getElementById('meta');
+    const presetsEl = document.getElementById('presets');
+
+    const PRESETS = [
+      { label: '中文 · 业务', text: '嘿嘿你好呀~我是 omo，你的专属小助理。今天的 Stripe 跑得不错哦，要不要我给你拉张图看看？' },
+      { label: '中文 · 短', text: '搞定啦！这周销售比上周涨了百分之十二~' },
+      { label: 'English · biz', text: 'Hey! I just pulled the numbers — Stripe is up twelve percent this week. Want me to throw a chart on the stage?' },
+      { label: 'Mixed zh+en', text: '诶，Meta 广告的 ROAS 今天 mid-single-digits，不太理想。要我 pause 一下 campaign 看看？' },
+      { label: 'Sentence', text: 'The quick brown fox jumps over the lazy dog, and then says good morning in three languages.' },
+    ];
+    PRESETS.forEach((p) => {
+      const b = document.createElement('button');
+      b.textContent = p.label;
+      b.onclick = () => { textEl.value = p.text; invalidateAudios(); };
+      presetsEl.appendChild(b);
+    });
+
+    let current = null; // { audio, card }
+    const audios = new Map(); // voice → Audio element
+
+    function sampleUrl(voice) {
+      const params = new URLSearchParams({ voice, text: textEl.value.trim() });
+      return `/voices/sample.wav?${params.toString()}`;
+    }
+
+    function invalidateAudios() {
+      // Dispose any preloaded audios because the text changed.
+      stopCurrent();
+      audios.clear();
+      [...grid.children].forEach((c) => {
+        c.classList.remove('playing', 'loading', 'error');
+        c.querySelector('.status').textContent = '';
+      });
+    }
+
+    function stopCurrent() {
+      if (current?.audio) {
+        current.audio.pause();
+        current.audio.currentTime = 0;
+      }
+      if (current?.card) {
+        current.card.classList.remove('playing', 'loading');
+      }
+      current = null;
+    }
+
+    async function play(voice, card) {
+      stopCurrent();
+      card.classList.remove('error');
+      card.classList.add('loading');
+      card.querySelector('.status').textContent = 'synthesizing…';
+
+      const audio = new Audio(sampleUrl(voice));
+      audios.set(voice, audio);
+      audio.addEventListener('playing', () => {
+        card.classList.remove('loading');
+        card.classList.add('playing');
+        card.querySelector('.status').textContent = 'playing';
+      });
+      audio.addEventListener('ended', () => {
+        card.classList.remove('playing');
+        card.querySelector('.status').textContent = '';
+        if (current?.voice === voice) current = null;
+      });
+      audio.addEventListener('error', () => {
+        card.classList.remove('playing', 'loading');
+        card.classList.add('error');
+        card.querySelector('.status').textContent = 'error — check server log';
+      });
+
+      current = { audio, card, voice };
+      try {
+        await audio.play();
+      } catch (err) {
+        card.classList.remove('playing', 'loading');
+        card.classList.add('error');
+        card.querySelector('.status').textContent = 'blocked: ' + err.message;
+      }
+    }
+
+    stopBtn.onclick = stopCurrent;
+
+    playAllBtn.onclick = async () => {
+      stopCurrent();
+      const cards = [...grid.children];
+      for (const card of cards) {
+        const voice = card.dataset.voice;
+        await new Promise(async (resolve) => {
+          const audio = new Audio(sampleUrl(voice));
+          audios.set(voice, audio);
+          card.classList.add('loading');
+          card.querySelector('.status').textContent = 'synthesizing…';
+          audio.addEventListener('playing', () => {
+            card.classList.remove('loading');
+            card.classList.add('playing');
+            card.querySelector('.status').textContent = 'playing';
+          });
+          audio.addEventListener('ended', () => {
+            card.classList.remove('playing');
+            card.querySelector('.status').textContent = '';
+            resolve();
+          });
+          audio.addEventListener('error', () => {
+            card.classList.remove('playing', 'loading');
+            card.classList.add('error');
+            card.querySelector('.status').textContent = 'error';
+            resolve();
+          });
+          current = { audio, card, voice };
+          try { await audio.play(); } catch (err) { resolve(); }
+        });
+      }
+    };
+
+    textEl.addEventListener('input', () => { invalidateAudios(); });
+
+    // Fetch the voice list from the server, render the grid.
+    fetch('/voices/list').then((r) => r.json()).then(({ voices, model, sampleRate }) => {
+      meta.textContent = `model: ${model}  ·  ${voices.length} voices  ·  ${sampleRate} Hz`;
+      for (const v of voices) {
+        const card = document.createElement('div');
+        card.className = 'card';
+        card.dataset.voice = v.name;
+        card.innerHTML = `
+          <div class="card-top">
+            <div class="name">${v.name}</div>
+            <div class="vibe">${v.vibe}</div>
+          </div>
+          <button>▶ play</button>
+          <div class="status"></div>
+        `;
+        card.querySelector('button').onclick = () => play(v.name, card);
+        grid.appendChild(card);
+      }
+    });
+  </script>
+</body>
+</html>

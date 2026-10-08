@@ -1,0 +1,10 @@
+omo-hologram
+Copyright (c) 2026 Harry Edwards. Licensed under the MIT License (see LICENSE).
+
+Third-party material
+--------------------
+public/squad/ (pixel-office engine logic and sprite assets) is adapted from
+Pixel Agents, https://github.com/pablodelucca/pixel-agents, MIT License,
+Copyright (c) Pablo De Lucca. Its character sprites are based on the
+"Metro City" free top-down character pack by JIK-A-4
+(https://jik-a-4.itch.io/metrocity-free-topdown-character-pack).

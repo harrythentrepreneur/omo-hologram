@@ -1,0 +1,732 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, user-scalable=no">
+<title>omo // Pepper's Ghost Pyramid</title>
+<script src="/client-log.js"></script>
+<script type="module" src="/text-overlay.js"></script>
+<script src="/voice-mode.js"></script>
+<style>
+  html, body {
+    margin: 0; padding: 0; height: 100%;
+    background: #000; color: #00e5ff;
+    font-family: "SF Mono", monospace;
+    overflow: hidden; touch-action: none;
+    -webkit-user-select: none; user-select: none;
+  }
+  #stage {
+    position: fixed; inset: 0;
+    display: grid;
+    place-items: center;
+  }
+  .pyramid {
+    position: relative;
+    width: min(100vmin, 100vmin);
+    height: min(100vmin, 100vmin);
+  }
+  .face {
+    position: absolute;
+    left: 50%; top: 50%;
+    transform-origin: center;
+    background: #000;
+  }
+  /* 4 faces positioned around center. each is offset outward from center,
+     so the bottom edge of each canvas meets the central square. the pyramid
+     (reflective plastic, apex up) reflects each face inward to form the illusion. */
+  .face.bottom {
+    transform: translate(-50%, 0) rotate(0deg);
+  }
+  .face.top {
+    transform: translate(-50%, -100%) rotate(180deg);
+  }
+  .face.left {
+    transform: translate(-100%, -50%) rotate(90deg);
+  }
+  .face.right {
+    transform: translate(0, -50%) rotate(-90deg);
+  }
+  #info {
+    position: fixed; top: 12px; left: 50%; transform: translateX(-50%);
+    font-size: 10px; letter-spacing: 2px; opacity: 0.55; z-index: 10;
+    text-align: center;
+  }
+  #mute {
+    position: fixed; top: 12px; right: 12px; z-index: 10;
+    border: 1px solid rgba(0,229,255,0.4); background: transparent;
+    color: #00e5ff; font: inherit; font-size: 10px; letter-spacing: 2px;
+    padding: 6px 10px; cursor: pointer;
+  }
+  /* Slight center dot so users know where to align pyramid apex */
+  .center-mark {
+    position: absolute; left: 50%; top: 50%;
+    width: 4px; height: 4px; border-radius: 50%;
+    background: rgba(0, 229, 255, 0.15);
+    transform: translate(-50%, -50%);
+    pointer-events: none;
+  }
+
+  /* ── Status / diag (match other pages) ───────────────────────────── */
+  #status {
+    position: fixed; top: 8px; left: 8px; z-index: 30;
+    width: 8px; height: 8px; border-radius: 50%;
+    background: #00e5ff; opacity: 0;
+    box-shadow: 0 0 12px #00e5ff;
+    transition: opacity 0.2s ease, background 0.2s ease, box-shadow 0.2s ease;
+  }
+  body.rt-connecting #status { opacity: 0.45; }
+  body.rt-connected  #status { opacity: 0.6; }
+  body.rt-listening  #status {
+    opacity: 0.9; background: #ff66b3; box-shadow: 0 0 12px #ff66b3;
+    animation: pulse 1.2s ease-in-out infinite;
+  }
+  body.rt-error #status { opacity: 0.9; background: #ff5a7a; box-shadow: 0 0 12px #ff5a7a; }
+  @keyframes pulse { 0%,100% { transform: scale(1); } 50% { transform: scale(0.6); } }
+
+  #diag {
+    position: fixed; bottom: 8px; left: 10px; z-index: 30;
+    font-size: 10px; letter-spacing: 1px;
+    color: #00e5ff; opacity: 0.55;
+    text-shadow: 0 0 4px rgba(0,229,255,0.6);
+    pointer-events: none; max-width: 60ch;
+    white-space: pre-wrap;
+  }
+  #diag.err { color: #ff8aa3; text-shadow: 0 0 4px rgba(255,90,122,0.6); opacity: 0.9; }
+
+  /* ── Chart facets ─────────────────────────────────────────────────
+     Four chart cards, one per pyramid facet. Each sits in the same
+     geometric slot as its avatar canvas (translate+rotate), with an
+     inscribed rectangle ~42% wide × 26% tall of the face — roughly
+     the horizontal midline of the triangle where the Pepper's Ghost
+     reflection reads cleanly.
+
+     Content inside the card is rotated 0°/-90°/180°/90° so that when
+     the glass pyramid reflects it back to the viewer standing in
+     front of the rig, all four copies appear upright. */
+  .chart-facet {
+    position: absolute;
+    left: 50%; top: 50%;
+    width: 42%; height: 26%;
+    transform-origin: center;
+    opacity: 0;
+    transform: translate(-50%, -50%) scale(0.94);
+    transition: opacity 0.45s ease, transform 0.45s ease;
+    pointer-events: none; /* don't steal taps from the stage */
+    z-index: 5;
+  }
+  .chart-facet.show {
+    opacity: 1;
+    transform: translate(-50%, -50%) scale(1);
+  }
+  /* Per-facet placement: offset the card outward toward the face so
+     it sits in the reflection zone, and rotate its content to read
+     upright when reflected. The outer translate positions the card
+     in the facet slot; the inner content rotation is on the iframe. */
+  .chart-facet.bottom { transform: translate(-50%, 18%) scale(0.94); }
+  .chart-facet.bottom.show { transform: translate(-50%, 18%) scale(1); }
+  .chart-facet.top    { transform: translate(-50%, -118%) scale(0.94); }
+  .chart-facet.top.show    { transform: translate(-50%, -118%) scale(1); }
+  .chart-facet.left   { transform: translate(-118%, -50%) scale(0.94); }
+  .chart-facet.left.show   { transform: translate(-118%, -50%) scale(1); }
+  .chart-facet.right  { transform: translate(18%, -50%) scale(0.94); }
+  .chart-facet.right.show  { transform: translate(18%, -50%) scale(1); }
+
+  .chart-facet iframe {
+    display: block;
+    width: 100%; height: 100%;
+    border: 0; background: #000;
+    /* The card itself is a horizontal rectangle in the facet slot;
+       the iframe's content needs to rotate so it reads upright when
+       reflected in its specific glass face. */
+  }
+  .chart-facet.bottom iframe { transform: rotate(0deg); }
+  .chart-facet.right  iframe { transform: rotate(-90deg); }
+  .chart-facet.top    iframe { transform: rotate(180deg); }
+  .chart-facet.left   iframe { transform: rotate(90deg); }
+
+  /* Rotated iframes need their bounding box re-fit; for 90°/270° the
+     iframe's own width/height must swap so the rendered page fills
+     the card's rectangle correctly. */
+  .chart-facet.left iframe, .chart-facet.right iframe {
+    width: 100%; height: 100%;
+  }
+</style>
+
+<script type="importmap">
+{
+  "imports": {
+    "three": "https://unpkg.com/three@0.160.0/build/three.module.js"
+  }
+}
+</script>
+</head>
+<body>
+
+<div id="status"></div>
+<div id="diag">boot…</div>
+
+<div id="info">PLACE PYRAMID CENTER · SPACE / TAP TO CONNECT</div>
+<button id="mute">MUTE</button>
+
+<div id="stage">
+  <div class="pyramid" id="pyramid">
+    <canvas class="face bottom" data-angle="0"></canvas>
+    <canvas class="face left"   data-angle="1.5707963"></canvas>
+    <canvas class="face top"    data-angle="3.1415927"></canvas>
+    <canvas class="face right"  data-angle="-1.5707963"></canvas>
+    <div class="center-mark"></div>
+
+    <!-- Four chart facet mounts. One iframe each, same /viz/:id src,
+         rotated so the reflected image reads upright. -->
+    <div class="chart-facet bottom" data-facet="bottom"></div>
+    <div class="chart-facet right"  data-facet="right"></div>
+    <div class="chart-facet top"    data-facet="top"></div>
+    <div class="chart-facet left"   data-facet="left"></div>
+  </div>
+</div>
+
+<script type="module">
+  // ─── Diagnostics ───────────────────────────────────────────────────
+  const diagEl = document.getElementById('diag');
+  const diagLines = [];
+  function diag(msg, isErr) {
+    diagLines.push(msg);
+    if (diagLines.length > 6) diagLines.shift();
+    diagEl.textContent = diagLines.join('  ·  ');
+    diagEl.classList.toggle('err', !!isErr);
+    console.log('[pyramid]', msg);
+  }
+  window.addEventListener('error', (e) => diag('JS ERR: ' + (e.message || e.error), true));
+  window.addEventListener('unhandledrejection', (e) => diag('PROMISE ERR: ' + (e.reason?.message || e.reason), true));
+  diag('boot');
+
+  // ─── Keyboard / tap bindings (set before heavy init) ─────────────────
+  // /voice-mode.js owns SPACE in PTT/OFF (push-to-talk + muted swallow)
+  // and dispatches omo:voice-want-on/off; the listeners below react. This
+  // bare SPACE handler only runs in 'on' mode (legacy press-to-toggle).
+  let connectHandler = () => diag('press ignored (init still loading)');
+  window.addEventListener('keydown', (e) => {
+    if (e.code !== 'Space' || e.repeat) return;
+    if (window.omoVoiceMode && window.omoVoiceMode.current !== 'on') return;
+    e.preventDefault();
+    diag('space pressed');
+    connectHandler();
+  }, { capture: true });
+  document.body.addEventListener('click', (e) => {
+    if (e.target.closest('#mute') || e.target.closest('#voice-mode-hud')) return;
+    // Only the legacy 'on' mode uses click-anywhere-to-connect. PTT/OFF
+    // are explicit opt-outs — a stray click shouldn't override them.
+    if (window.omoVoiceMode && window.omoVoiceMode.current !== 'on') return;
+    connectHandler();
+  });
+
+  import * as THREE from 'three';
+  import { createAvatar, updateAvatar, createHologramScene } from './avatar.js';
+
+  const { scene, update: updateScene } = createHologramScene();
+  // For the pyramid we want the avatar isolated on pitch black — the fog/background
+  // hide stray pixels that would leak outside the pyramid faces.
+  scene.background = new THREE.Color(0x000000);
+  scene.fog = new THREE.FogExp2(0x000000, 0.13);
+
+  const avatar = createAvatar();
+  scene.add(avatar);
+  avatar.userData.speaking = false;
+
+  const canvases = Array.from(document.querySelectorAll('canvas.face'));
+  const faces = canvases.map((canvas) => {
+    const renderer = new THREE.WebGLRenderer({ canvas, antialias: true, alpha: false });
+    renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+    renderer.toneMapping = THREE.ACESFilmicToneMapping;
+    renderer.toneMappingExposure = 1.2;
+    const angle = parseFloat(canvas.dataset.angle);
+    const camera = new THREE.PerspectiveCamera(30, 1, 0.1, 100);
+    const R = 6.2;
+    const Y = 0.6;
+    camera.position.set(Math.sin(angle) * R, Y, Math.cos(angle) * R);
+    camera.lookAt(0, 0, 0);
+    return { renderer, camera };
+  });
+
+  function layout() {
+    const vmin = Math.min(window.innerWidth, window.innerHeight);
+    const faceSize = Math.floor(vmin * 0.38);
+    canvases.forEach((c) => {
+      c.width = faceSize * Math.min(window.devicePixelRatio, 2);
+      c.height = faceSize * Math.min(window.devicePixelRatio, 2);
+      c.style.width = faceSize + 'px';
+      c.style.height = faceSize + 'px';
+    });
+    faces.forEach(({ renderer, camera }) => {
+      renderer.setSize(faceSize, faceSize, false);
+      camera.aspect = 1;
+      camera.updateProjectionMatrix();
+    });
+    // Size chart facets relative to the avatar face: the chart card
+    // matches the inscribed rectangle of each triangular facet.
+    const cardW = Math.floor(faceSize * 0.82);
+    const cardH = Math.floor(faceSize * 0.32);
+    document.querySelectorAll('.chart-facet').forEach((el) => {
+      el.style.width = cardW + 'px';
+      el.style.height = cardH + 'px';
+    });
+  }
+  layout();
+  window.addEventListener('resize', layout);
+  window.addEventListener('orientationchange', layout);
+
+  const clock = new THREE.Clock();
+  function loop() {
+    const dt = clock.getDelta();
+    const t = clock.elapsedTime;
+    updateScene(t, dt);
+    updateAvatar(avatar, t, dt);
+    for (const { renderer, camera } of faces) renderer.render(scene, camera);
+    requestAnimationFrame(loop);
+  }
+  loop();
+
+  // ─── Mute button (also kills any ongoing TTS / audio) ───────────────
+  let muted = false;
+  const muteBtn = document.getElementById('mute');
+  muteBtn.addEventListener('click', (e) => {
+    e.stopPropagation();
+    muted = !muted;
+    muteBtn.textContent = muted ? 'UNMUTE' : 'MUTE';
+    if (muted) {
+      if ('speechSynthesis' in window) window.speechSynthesis.cancel();
+      if (connected || connecting) { diag('muted — disconnecting'); teardown(); }
+    }
+  });
+
+  // ─── Four-facet chart mount (pyramid-specific) ──────────────────────
+  // chart-layer.js is designed for a single front-facing stage card —
+  // it can't natively fan out to four rotated facets. So we keep it
+  // simple: one <iframe src="/viz/:id"> per facet, same id everywhere,
+  // each card rotated to match its glass face. Server-side LRU + HTTP
+  // caching means the four requests are cheap.
+  const facetEls = {
+    bottom: document.querySelector('.chart-facet.bottom'),
+    right:  document.querySelector('.chart-facet.right'),
+    top:    document.querySelector('.chart-facet.top'),
+    left:   document.querySelector('.chart-facet.left'),
+  };
+  let currentVizId = null;
+
+  function mountFacetCharts(vizId) {
+    currentVizId = vizId;
+    for (const [facet, el] of Object.entries(facetEls)) {
+      // Tear down old iframe, if any.
+      el.classList.remove('show');
+      el.innerHTML = '';
+      const iframe = document.createElement('iframe');
+      iframe.setAttribute('sandbox', 'allow-scripts allow-popups allow-popups-to-escape-sandbox');
+      iframe.setAttribute('referrerpolicy', 'no-referrer');
+      iframe.src = `/viz/${encodeURIComponent(vizId)}`;
+      iframe.addEventListener('load', () => {
+        // In case the iframe never posts ready (e.g. quick-rendering
+        // static content), still reveal shortly after load.
+        setTimeout(() => el.classList.add('show'), 120);
+      });
+      el.appendChild(iframe);
+    }
+    diag('viz mounted x4: ' + vizId);
+  }
+
+  function forEachFacetIframe(fn) {
+    for (const el of Object.values(facetEls)) {
+      const iframe = el.querySelector('iframe');
+      if (iframe && iframe.contentWindow) fn(iframe);
+    }
+  }
+
+  function highlightFacetCharts(opts) {
+    const cmd = { holoVizCmd: true, kind: 'highlight', ...opts };
+    forEachFacetIframe((f) => { try { f.contentWindow.postMessage(cmd, '*'); } catch {} });
+  }
+  function dismissFacetCharts() {
+    currentVizId = null;
+    for (const el of Object.values(facetEls)) {
+      el.classList.remove('show');
+      // Keep the iframe around during fade-out, then strip it.
+      setTimeout(() => { if (!el.classList.contains('show')) el.innerHTML = ''; }, 500);
+    }
+    diag('viz dismissed');
+  }
+
+  // Receive 'ready' from iframe children → reveal their card.
+  window.addEventListener('message', (e) => {
+    const data = e.data;
+    if (!data || typeof data !== 'object') return;
+    if (data.type === 'ready' || data.holoVizReady) {
+      // Match source iframe to its facet and reveal just that card.
+      for (const [facet, el] of Object.entries(facetEls)) {
+        const iframe = el.querySelector('iframe');
+        if (iframe && iframe.contentWindow === e.source) {
+          el.classList.add('show');
+          break;
+        }
+      }
+    }
+  });
+
+  // Expose for debugging / parity with chart-layer's __holoChart.
+  window.__holoPyramidChart = {
+    mount: (vizId) => mountFacetCharts(vizId),
+    highlight: (opts) => highlightFacetCharts(opts || {}),
+    dismiss: () => dismissFacetCharts(),
+    current: () => currentVizId,
+  };
+
+  // ─── Gemini Live session ────────────────────────────────────────────
+  // Same wire pattern as holo_reflector.html: ephemeral token from
+  // /session, mic PCM @ 16 kHz, model audio @ 24 kHz through a cute
+  // voice chain, mouth analyser drives avatar.
+  let liveSession = null;
+  let micCtx = null, micStream = null, micNode = null;
+  let playCtx = null, cuteInput = null;
+  let analyser = null, analyserData = null;
+  let playHead = 0, playingSources = [];
+  let connecting = false, connected = false;
+  let sessionInfo = null;
+
+  function setBodyState(state) {
+    document.body.classList.remove('rt-connecting', 'rt-connected', 'rt-listening', 'rt-error');
+    if (state) document.body.classList.add(state);
+  }
+
+  async function connect() {
+    if (connecting || connected || muted) return;
+    connecting = true;
+    setBodyState('rt-connecting');
+    diag('fetching token');
+
+    try {
+      const r = await fetch('/session', { method: 'POST' });
+      if (!r.ok) throw new Error(`/session ${r.status}: ${await r.text()}`);
+      sessionInfo = await r.json();
+    } catch (err) {
+      diag('session failed: ' + err.message, true);
+      setBodyState('rt-error'); connecting = false; return;
+    }
+    if (!sessionInfo?.token) {
+      diag('no token', true);
+      setBodyState('rt-error'); connecting = false; return;
+    }
+    diag('token ok · loading sdk');
+
+    let GoogleGenAI;
+    try {
+      ({ GoogleGenAI } = await import('https://esm.sh/@google/genai@1.50.1'));
+    } catch (err) {
+      diag('sdk import failed: ' + err.message, true);
+      setBodyState('rt-error'); connecting = false; return;
+    }
+
+    try {
+      await setupAudio();
+      diag('audio ok · opening ws');
+    } catch (err) {
+      diag('audio setup failed: ' + err.message, true);
+      setBodyState('rt-error'); teardown(); connecting = false; return;
+    }
+
+    const ai = new GoogleGenAI({
+      apiKey: sessionInfo.token,
+      httpOptions: { apiVersion: 'v1alpha' },
+    });
+    try {
+      liveSession = await ai.live.connect({
+        model: sessionInfo.model,
+        config: sessionInfo.setupConfig,
+        callbacks: {
+          onopen: () => { diag('ws open'); },
+          onmessage: (msg) => handleLiveMessage(msg),
+          onerror: (e) => { diag('ws error: ' + (e.message || e), true); setBodyState('rt-error'); },
+          onclose: (e) => {
+            const reason = e?.reason || ('code ' + (e?.code ?? '?'));
+            const isError = e?.code && e.code !== 1000;
+            if (connected || connecting) {
+              diag('ws closed: ' + reason, isError);
+              if (isError) setBodyState('rt-error');
+              teardown();
+            }
+          },
+        },
+      });
+    } catch (err) {
+      diag('ws connect failed: ' + err.message, true);
+      setBodyState('rt-error'); teardown(); connecting = false; return;
+    }
+
+    connecting = false;
+    connected = true;
+    setBodyState('rt-connected');
+    diag('LIVE · 和 omo 说话');
+  }
+
+  function teardown() {
+    connected = false; connecting = false;
+    avatar.userData.speaking = false;
+    avatar.userData.listening = false;
+    avatar.userData.mouthDrive = null;
+    stopAllPlayback();
+    if (micNode) { try { micNode.port.onmessage = null; micNode.disconnect(); } catch {} micNode = null; }
+    if (liveSession) { try { liveSession.close(); } catch {} liveSession = null; }
+    if (micStream) { micStream.getTracks().forEach((t) => t.stop()); micStream = null; }
+    if (micCtx) { try { micCtx.close(); } catch {} micCtx = null; }
+    if (playCtx) { try { playCtx.close(); } catch {} playCtx = null; }
+    cuteInput = null; analyser = null; analyserData = null; playHead = 0;
+    setBodyState(null);
+  }
+
+  async function setupAudio() {
+    micStream = await navigator.mediaDevices.getUserMedia({ audio: true });
+    micCtx = new AudioContext({ sampleRate: 16000 });
+    await micCtx.audioWorklet.addModule('/pcm-worklet.js');
+    const src = micCtx.createMediaStreamSource(micStream);
+    micNode = new AudioWorkletNode(micCtx, 'pcm16-worklet');
+    micNode.port.onmessage = (e) => {
+      if (!liveSession || !connected) return;
+      const b64 = arrayBufferToBase64(e.data);
+      try {
+        liveSession.sendRealtimeInput({
+          audio: { data: b64, mimeType: 'audio/pcm;rate=16000' },
+        });
+      } catch (err) { console.warn('[gemini] send failed', err); }
+    };
+    src.connect(micNode);
+
+    playCtx = new AudioContext({ sampleRate: 24000 });
+    playHead = playCtx.currentTime;
+    cuteInput = buildCuteChain(playCtx);
+  }
+
+  function buildCuteChain(ctx) {
+    const input = ctx.createGain();
+    const notch = ctx.createBiquadFilter();
+    notch.type = 'peaking'; notch.frequency.value = 260; notch.Q.value = 0.9; notch.gain.value = -2.5;
+    const bright = ctx.createBiquadFilter();
+    bright.type = 'highshelf'; bright.frequency.value = 3200; bright.gain.value = 4;
+    input.connect(notch).connect(bright);
+    const dry = ctx.createGain(); dry.gain.value = 0.95;
+    bright.connect(dry).connect(ctx.destination);
+    const d1 = ctx.createDelay(0.05); d1.delayTime.value = 0.014;
+    const lfo1 = ctx.createOscillator(); const lfo1g = ctx.createGain();
+    lfo1.frequency.value = 1.3; lfo1g.gain.value = 0.0028;
+    lfo1.connect(lfo1g).connect(d1.delayTime); lfo1.start();
+    const chorusG = ctx.createGain(); chorusG.gain.value = 0.22;
+    bright.connect(d1).connect(chorusG).connect(ctx.destination);
+    const conv = ctx.createConvolver();
+    conv.buffer = makeImpulse(ctx, 0.7, 2.5);
+    const revG = ctx.createGain(); revG.gain.value = 0.14;
+    bright.connect(conv).connect(revG).connect(ctx.destination);
+    analyser = ctx.createAnalyser();
+    analyser.fftSize = 512; analyser.smoothingTimeConstant = 0.6;
+    bright.connect(analyser);
+    analyserData = new Uint8Array(analyser.frequencyBinCount);
+    return input;
+  }
+
+  function makeImpulse(ctx, duration, decay) {
+    const len = Math.floor(ctx.sampleRate * duration);
+    const buf = ctx.createBuffer(2, len, ctx.sampleRate);
+    for (let c = 0; c < 2; c++) {
+      const ch = buf.getChannelData(c);
+      for (let i = 0; i < len; i++) ch[i] = (Math.random() * 2 - 1) * Math.pow(1 - i / len, decay);
+    }
+    return buf;
+  }
+
+  function sampleMouth() {
+    if (!analyser || !analyserData) return null;
+    analyser.getByteFrequencyData(analyserData);
+    let sum = 0, n = 0;
+    for (let i = 2; i < Math.min(48, analyserData.length); i++) { sum += analyserData[i]; n++; }
+    const avg = sum / (n * 255);
+    return Math.min(1, Math.pow(avg * 1.6, 0.9));
+  }
+
+  function enqueuePcmChunk(int16, sampleRate) {
+    if (!playCtx || !cuteInput) return;
+    const buf = playCtx.createBuffer(1, int16.length, sampleRate);
+    const ch = buf.getChannelData(0);
+    for (let i = 0; i < int16.length; i++) ch[i] = int16[i] / 0x8000;
+    const src = playCtx.createBufferSource();
+    src.buffer = buf; src.connect(cuteInput);
+    const startAt = Math.max(playHead, playCtx.currentTime + 0.02);
+    src.start(startAt);
+    playHead = startAt + buf.duration;
+    playingSources.push(src);
+    src.onended = () => { playingSources = playingSources.filter((s) => s !== src); };
+  }
+
+  function stopAllPlayback() {
+    playingSources.forEach((s) => { try { s.stop(); } catch {} });
+    playingSources = [];
+    if (playCtx) playHead = playCtx.currentTime;
+  }
+
+  // Momo ingest — finalized transcripts flow onto /omo/ws so /hq and
+  // /agents-grid see voice activity as it happens.
+  let momoIngest = null;
+  async function ensureMomoIngest() {
+    if (momoIngest) return momoIngest;
+    try {
+      const mod = await import('./momo-ingest.js');
+      momoIngest = mod.attachMomoIngest({
+        page: 'pyramid',
+        getSession: () => ({ model: sessionInfo?.model, voice: sessionInfo?.voice }),
+      });
+    } catch (err) { console.warn('momo-ingest import failed', err); }
+    return momoIngest;
+  }
+
+  let momoReactions = null;
+  async function ensureMomoReactions() {
+    if (momoReactions) return momoReactions;
+    try {
+      const mod = await import('./momo-reactions.js');
+      momoReactions = mod.attachMomoReactions({ avatar });
+    } catch (err) { console.warn('momo-reactions import failed', err); }
+    return momoReactions;
+  }
+
+  function handleLiveMessage(msg) {
+    if (msg.setupComplete) return;
+    ensureMomoIngest().then((ing) => ing && ing.onLiveMessage(msg));
+    ensureMomoReactions().then((r) => r && r.onLiveMessage(msg));
+    const sc = msg.serverContent;
+    if (sc) {
+      if (sc.modelTurn?.parts) {
+        for (const part of sc.modelTurn.parts) {
+          const inline = part.inlineData;
+          if (inline && typeof inline.data === 'string' && /audio\/pcm/i.test(inline.mimeType || '')) {
+            const rate = extractRate(inline.mimeType) || 24000;
+            const int16 = base64ToInt16(inline.data);
+            if (!avatar.userData.speaking) {
+              avatar.userData.speaking = true;
+              setBodyState('rt-connected');
+            }
+            enqueuePcmChunk(int16, rate);
+          }
+        }
+      }
+      if (sc.interrupted) {
+        stopAllPlayback();
+        avatar.userData.speaking = false;
+      }
+      if (sc.generationComplete || sc.turnComplete) {
+        const drain = Math.max(0, (playHead - (playCtx?.currentTime || 0)) * 1000);
+        setTimeout(() => {
+          if (playingSources.length === 0) avatar.userData.speaking = false;
+        }, drain + 60);
+      }
+    }
+    const activity = msg.serverContent?.inputActivity || msg.inputActivity;
+    if (activity?.start) {
+      avatar.userData.listening = true;
+      if (connected) setBodyState('rt-listening');
+    }
+    if (activity?.end) {
+      avatar.userData.listening = false;
+      if (connected) setBodyState('rt-connected');
+    }
+    if (msg.toolCall?.functionCalls) {
+      for (const call of msg.toolCall.functionCalls) handleFunctionCall(call);
+    }
+  }
+
+  async function handleFunctionCall(call) {
+    const { id, name, args } = call;
+    diag('tool: ' + name);
+    let output;
+    try {
+      const r = await fetch('/tool', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name, arguments: args || {} }),
+      });
+      output = await r.json();
+    } catch (err) { output = { error: String(err) }; }
+    const result = output.result ?? output;
+
+    // render_viz → mount to all four facets.
+    if (name === 'render_viz' && result && result.viz_id) {
+      try { mountFacetCharts(result.viz_id); }
+      catch (err) { diag('viz mount err: ' + err.message, true); }
+    }
+    // highlight_viz / dismiss_viz — Agent A's tools. Forward or noop.
+    if (name === 'highlight_viz' && result) {
+      try { highlightFacetCharts(result); } catch {}
+    }
+    if (name === 'dismiss_viz') {
+      try { dismissFacetCharts(); } catch {}
+    }
+
+    if (!liveSession) return;
+    try {
+      liveSession.sendToolResponse({
+        functionResponses: [{ id, name, response: { result } }],
+      });
+    } catch (err) { console.warn('[gemini] sendToolResponse failed', err); }
+  }
+
+  // ─── Helpers ─────────────────────────────────────────────────────────
+  function base64ToInt16(b64) {
+    const bin = atob(b64);
+    const len = bin.length;
+    const bytes = new Uint8Array(len);
+    for (let i = 0; i < len; i++) bytes[i] = bin.charCodeAt(i);
+    return new Int16Array(bytes.buffer, bytes.byteOffset, Math.floor(len / 2));
+  }
+  function arrayBufferToBase64(buf) {
+    const bytes = new Uint8Array(buf);
+    let s = '';
+    for (let i = 0; i < bytes.length; i++) s += String.fromCharCode(bytes[i]);
+    return btoa(s);
+  }
+  function extractRate(mimeType) {
+    const m = /rate=(\d+)/i.exec(mimeType || '');
+    return m ? parseInt(m[1], 10) : null;
+  }
+
+  // ─── Session toggle (SPACE / tap) ────────────────────────────────────
+  let toggleLock = false;
+  async function toggleSession() {
+    if (toggleLock) { diag('busy — wait'); return; }
+    toggleLock = true;
+    try {
+      if (connected || connecting) { diag('disconnecting'); teardown(); }
+      else { diag('connecting…'); await connect(); }
+    } finally {
+      setTimeout(() => { toggleLock = false; }, 250);
+    }
+  }
+  connectHandler = toggleSession;
+  diag('ready · press SPACE or tap to connect · / to type');
+
+  // ─── Shared voice-mode bridge ─────────────────────────────────────────
+  try { window.omoVoiceMode?.enablePtt(true); } catch {}
+  window.addEventListener('omo:voice-want-on', async () => {
+    if (connected || connecting) return;
+    try { await connect(); } catch (err) { console.warn('[voice/on] connect failed', err); }
+  });
+  window.addEventListener('omo:voice-want-off', () => {
+    if (connected || connecting) {
+      try { teardown(); } catch (err) { console.warn('[voice/off] teardown', err); }
+    }
+  });
+
+  // Text-chat input — type to Momo without using the mic.
+  const { installTextChat } = await import('./text-chat.js');
+  installTextChat({
+    getSession: () => liveSession,
+    isConnected: () => connected,
+    connect: async () => { if (!connected && !connecting) await connect(); },
+    diag,
+    mountEl: document.getElementById('stage') || document.body,
+  });
+</script>
+</body>
+</html>

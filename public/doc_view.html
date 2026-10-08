@@ -1,0 +1,74 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>OMO // DOC</title>
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <script type="module" src="/text-overlay.js"></script>
+  <script src="/voice-mode.js"></script>
+  <style>
+    * { box-sizing: border-box; }
+    html, body { margin: 0; padding: 0; height: 100%; background: #0a0e14; color: #e7f7ff; font-family: "SF Mono", ui-monospace, Menlo, monospace; overflow: hidden; }
+    .shell   { display: flex; flex-direction: column; height: 100%; }
+    .header  {
+      display: flex; align-items: center; gap: 14px;
+      padding: 10px 16px;
+      border-bottom: 1px solid rgba(0, 229, 255, 0.3);
+      background: #0f1520;
+      flex: 0 0 auto;
+    }
+    .kicker  {
+      font-size: 10px; letter-spacing: 0.26em; color: #00e5ff;
+      text-transform: uppercase;
+    }
+    .kicker::before {
+      content: ''; display: inline-block; width: 6px; height: 6px;
+      background: #00e5ff; border-radius: 50%; margin-right: 8px;
+      vertical-align: middle; box-shadow: 0 0 6px #00e5ff;
+    }
+    .title   {
+      flex: 1 1 auto; min-width: 0;
+      font-size: 15px; font-weight: 600;
+      white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+      color: #cdefff;
+    }
+    .edit    {
+      display: inline-flex; align-items: center; gap: 8px;
+      padding: 7px 13px;
+      border: 1px solid rgba(0, 229, 255, 0.5);
+      background: rgba(0, 229, 255, 0.10);
+      border-radius: 2px;
+      font: 600 11px/1 inherit;
+      letter-spacing: 0.18em; text-transform: uppercase;
+      color: #e7f7ff; text-decoration: none;
+    }
+    .edit:hover { background: rgba(0, 229, 255, 0.22); border-color: rgba(0, 229, 255, 0.85); }
+    .body    { flex: 1 1 auto; min-height: 0; background: #fff; }
+    iframe   { width: 100%; height: 100%; border: 0; display: block; }
+  </style>
+</head>
+<body>
+  <div class="shell">
+    <div class="header">
+      <span class="kicker">GOOGLE DOC</span>
+      <span class="title" id="t">Doc</span>
+      <a class="edit" id="e" target="_blank" rel="noopener noreferrer" href="#">EDIT IN DRIVE ↗</a>
+    </div>
+    <div class="body"><iframe id="f" referrerpolicy="no-referrer"></iframe></div>
+  </div>
+  <script>
+    (function () {
+      var parts = location.pathname.split('/').filter(Boolean);
+      var id = parts[parts.length - 1] || '';
+      if (!/^[A-Za-z0-9_-]+$/.test(id)) { document.getElementById('t').textContent = 'Invalid doc id'; return; }
+      var titleParam = new URLSearchParams(location.search).get('title');
+      if (titleParam) {
+        document.getElementById('t').textContent = titleParam;
+        try { document.title = 'OMO // ' + titleParam; } catch (_) {}
+      }
+      document.getElementById('e').href = 'https://docs.google.com/document/d/' + encodeURIComponent(id) + '/edit';
+      document.getElementById('f').src = 'https://docs.google.com/document/d/' + encodeURIComponent(id) + '/preview';
+    })();
+  </script>
+</body>
+</html>

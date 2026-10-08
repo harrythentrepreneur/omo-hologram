@@ -1,0 +1,964 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, user-scalable=no">
+<title>omo // Reflector</title>
+<script src="/client-log.js"></script>
+<script type="module" src="/text-overlay.js"></script>
+<script src="/voice-mode.js"></script>
+<style>
+  /* Reflective hologram displays (tilted-glass Pepper's Ghost, teleprompter
+     projectors, half-silvered mirrors) require three things from the source:
+       1. pitch black everything that isn't the subject — any non-black pixel
+          reflects into the air as a haze.
+       2. optional vertical/horizontal flip so the reflection appears
+          right-side-up to the viewer.
+       3. bright, high-contrast subject, since reflectors lose 30-50% of
+          the light. No UI chrome, no scanlines, no vignette. */
+  * { box-sizing: border-box; }
+  html, body {
+    margin: 0; padding: 0; height: 100%;
+    background: #000; color: #00e5ff;
+    font-family: "SF Mono", monospace;
+    overflow: hidden; touch-action: none;
+    -webkit-user-select: none; user-select: none;
+  }
+  #stage {
+    position: fixed; inset: 0;
+    display: grid; place-items: center;
+    transform: none;
+    transform-origin: center;
+    transition: transform 0.25s ease;
+  }
+  #scene { display: block; background: #000; }
+
+  /* Minimal floating control panel — hidden until the user moves the mouse
+     near the top-right corner. Reflector viewers usually don't want any UI
+     visible in the projection, so it auto-hides after 3s of no pointer. */
+  #panel {
+    position: fixed; top: 0; right: 0; z-index: 30;
+    padding: 10px 14px;
+    background: rgba(0,0,0,0.7);
+    border-left: 1px solid rgba(0,229,255,0.25);
+    border-bottom: 1px solid rgba(0,229,255,0.25);
+    font-size: 10px; letter-spacing: 1.5px;
+    color: #00e5ff;
+    opacity: 0; transition: opacity 0.3s ease;
+    pointer-events: none;
+  }
+  body.show-ui #panel { opacity: 0.85; pointer-events: auto; }
+  #panel label { display: flex; align-items: center; gap: 6px; margin: 5px 0; cursor: pointer; }
+  #panel input[type="range"] { width: 110px; }
+  #panel input[type="checkbox"] { accent-color: #00e5ff; }
+
+  #hint {
+    position: fixed; bottom: 14px; left: 50%;
+    transform: translateX(-50%);
+    font-size: 9px; letter-spacing: 2px;
+    color: #00e5ff; opacity: 0;
+    z-index: 30; pointer-events: none;
+    transition: opacity 0.3s ease;
+  }
+  body.show-ui #hint { opacity: 0.4; }
+
+  /* The UI elements sit in stage-space too, so they'd get flipped with the
+     scene. Counter-flip them so they're readable. */
+  body.flip-v #panel, body.flip-v #hint { /* no-op here, stage flip only applies inside #stage */ }
+
+  /* Status dot: very small, kept out of the reflection.
+     - idle:       hidden
+     - connecting: cyan, faint
+     - connected:  cyan, solid
+     - listening:  pink, pulsing (user is speaking)
+     - error:      red, solid */
+  #status {
+    position: fixed; top: 8px; left: 8px; z-index: 30;
+    width: 8px; height: 8px; border-radius: 50%;
+    background: #00e5ff; opacity: 0;
+    box-shadow: 0 0 12px #00e5ff;
+    transition: opacity 0.2s ease, background 0.2s ease, box-shadow 0.2s ease;
+  }
+  body.rt-connecting #status { opacity: 0.45; }
+  body.rt-connected  #status { opacity: 0.6; }
+  body.rt-listening  #status {
+    opacity: 0.9; background: #ff66b3; box-shadow: 0 0 12px #ff66b3;
+    animation: pulse 1.2s ease-in-out infinite;
+  }
+  body.rt-error #status { opacity: 0.9; background: #ff5a7a; box-shadow: 0 0 12px #ff5a7a; }
+  @keyframes pulse { 0%,100% { transform: scale(1); } 50% { transform: scale(0.6); } }
+
+  /* Diagnostic readout — plain text, tiny, bottom-left. Always visible so
+     you can see what's happening without opening devtools. */
+  #diag {
+    position: fixed; bottom: 8px; left: 10px; z-index: 30;
+    font-size: 10px; letter-spacing: 1px;
+    color: #00e5ff; opacity: 0.55;
+    text-shadow: 0 0 4px rgba(0,229,255,0.6);
+    pointer-events: none; max-width: 60ch;
+    white-space: pre-wrap;
+  }
+  #diag.err { color: #ff8aa3; text-shadow: 0 0 4px rgba(255,90,122,0.6); opacity: 0.9; }
+
+  /* ── Chart-layer helpers ──────────────────────────────────────────
+     chart-layer.js owns its full visual kit (module injects its own
+     <style>). It mounts INSIDE #stage now, sharing the reflectable
+     region with the avatar, so it inherits any flip transform on the
+     stage — correct for reflector rigs where on-screen text needs to
+     be mirrored so it reads right-way-round in the reflection. */
+  /* When the reflector is heavily rotated and you want the chart off
+     screen during performance, add .hide-charts to <body>. */
+  body.hide-charts #chart-layer { display: none; }
+</style>
+
+<script type="importmap">
+{
+  "imports": {
+    "three": "https://unpkg.com/three@0.160.0/build/three.module.js",
+    "three/addons/": "https://unpkg.com/three@0.160.0/examples/jsm/"
+  }
+}
+</script>
+</head>
+<body class="show-ui">
+
+<div id="status"></div>
+<div id="diag">boot…</div>
+
+<div id="panel">
+  <label><input type="checkbox" id="flipV"> FLIP VERTICAL</label>
+  <label><input type="checkbox" id="flipH"> FLIP HORIZONTAL</label>
+  <label><input type="checkbox" id="pedestal" checked> PEDESTAL</label>
+  <label><input type="checkbox" id="autoRotate" checked> AUTO ROTATE</label>
+  <label>SIZE <input type="range" id="zoom" min="3.2" max="9" step="0.1" value="6.5"></label>
+  <label>BRIGHTNESS <input type="range" id="bright" min="0.8" max="2" step="0.05" value="1.35"></label>
+</div>
+
+<div id="hint">TAP / SPACE TO CONNECT · THEN JUST TALK · F FOR FULLSCREEN</div>
+
+<div id="stage">
+  <canvas id="scene"></canvas>
+</div>
+
+<script type="module">
+  // ─── Diagnostics ─────────────────────────────────────────────────────
+  // Visible status so you can see what's happening without devtools.
+  const diagEl = document.getElementById('diag');
+  const diagLines = [];
+  function diag(msg, isErr) {
+    diagLines.push(msg);
+    if (diagLines.length > 6) diagLines.shift();
+    diagEl.textContent = diagLines.join('  ·  ');
+    diagEl.classList.toggle('err', !!isErr);
+    console.log('[reflector]', msg);
+  }
+  window.addEventListener('error', (e) => diag('JS ERR: ' + (e.message || e.error), true));
+  window.addEventListener('unhandledrejection', (e) => diag('PROMISE ERR: ' + (e.reason?.message || e.reason), true));
+  diag('boot');
+
+  // ─── Bind keyboard / tap FIRST so space always works even if 3D init
+  //     fails. connectHandler is set later when Realtime is ready. ──────
+  // /voice-mode.js owns SPACE in PTT/OFF (push-to-talk + muted swallow)
+  // and fires omo:voice-want-on/off events; this handler only runs in
+  // legacy 'on' mode (press-to-toggle).
+  let connectHandler = () => diag('press ignored (init still loading)');
+  window.addEventListener('keydown', (e) => {
+    if (e.code !== 'Space' || e.repeat) return;
+    if (window.omoVoiceMode && window.omoVoiceMode.current !== 'on') return;
+    e.preventDefault();
+    diag('space pressed');
+    connectHandler();
+  }, { capture: true });
+  // Click-vs-drag: OrbitControls reads pointer events on the canvas, so a
+  // drag-to-orbit ends with a synthetic click that would otherwise toggle
+  // the session. Track pointer movement on any pointerdown; if the pointer
+  // moved more than a few pixels before release, swallow the next click.
+  let dragSuppress = false;
+  let pointerStart = null;
+  window.addEventListener('pointerdown', (e) => {
+    if (e.target.closest('#panel')) return;
+    pointerStart = { x: e.clientX, y: e.clientY };
+    dragSuppress = false;
+  }, { capture: true });
+  window.addEventListener('pointermove', (e) => {
+    if (!pointerStart) return;
+    const dx = e.clientX - pointerStart.x;
+    const dy = e.clientY - pointerStart.y;
+    if (dx * dx + dy * dy > 36) dragSuppress = true; // >6px = drag
+  }, { capture: true });
+  window.addEventListener('pointerup', () => { pointerStart = null; }, { capture: true });
+
+  document.addEventListener('click', (e) => {
+    // Ignore clicks on the control panel so you can actually use it.
+    if (e.target.closest('#panel') || e.target.closest('#voice-mode-hud')) return;
+    if (dragSuppress) { dragSuppress = false; return; }
+    // Only the legacy 'on' mode uses tap-to-connect. PTT/OFF are explicit
+    // opt-outs — a stray tap shouldn't override them.
+    if (window.omoVoiceMode && window.omoVoiceMode.current !== 'on') return;
+    diag('tap');
+    connectHandler();
+  });
+  diag('keys bound');
+
+  let THREE, EffectComposer, RenderPass, UnrealBloomPass, OrbitControls;
+  let CSS3DRenderer, CSS3DObject;
+  let createAvatar, updateAvatar, createHologramScene;
+  try {
+    THREE = await import('three');
+    ({ EffectComposer } = await import('three/addons/postprocessing/EffectComposer.js'));
+    ({ RenderPass } = await import('three/addons/postprocessing/RenderPass.js'));
+    ({ UnrealBloomPass } = await import('three/addons/postprocessing/UnrealBloomPass.js'));
+    ({ OrbitControls } = await import('three/addons/controls/OrbitControls.js'));
+    // CSS3DRenderer: pairs a DOM tree with a Three.js scene so CSS3DObjects
+    // (chart panel, chat pill) render in world space alongside WebGL meshes.
+    ({ CSS3DRenderer, CSS3DObject } = await import('three/addons/renderers/CSS3DRenderer.js'));
+    ({ createAvatar, updateAvatar, createHologramScene } = await import('./avatar.js'));
+    diag('three loaded');
+  } catch (err) {
+    diag('import failed: ' + err.message, true);
+    throw err;
+  }
+
+  const { installChartLayer } = await import('./chart-layer.js');
+  const { getWorld } = await import('./world.js');
+  const { createStatusProjectable, STATUS_VARIANTS } = await import('./projectables/status.js');
+  diag('chart layer loaded');
+
+  const canvas = document.getElementById('scene');
+  const renderer = new THREE.WebGLRenderer({ canvas, antialias: true, alpha: false });
+  renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+  renderer.toneMapping = THREE.ACESFilmicToneMapping;
+  renderer.toneMappingExposure = 1.35; // brighter to compensate for reflection loss
+  renderer.setClearColor(0x000000, 1);
+
+  // Full holo stage by default: nebula sky, twinkling stars, orbiting
+  // crystals, pedestal + beam. The PEDESTAL checkbox can flip the scene
+  // to reflector-safe minimal mode (pure black, no environment) when the
+  // page is actually mounted on a Pepper's Ghost / mirror rig where any
+  // non-black pixel would haze the projection.
+  const initialScene = createHologramScene({ minimal: false });
+  const { scene, update: updateScene } = initialScene;
+  const avatar = createAvatar();
+  scene.add(avatar);
+
+  // sceneCtl is declared here (before installChartLayer) so chart-layer's
+  // pulsePedestal closure can reference it. It's a `let` because the
+  // PEDESTAL checkbox can hot-swap it when toggling minimal mode.
+  let sceneCtl = initialScene;
+
+  // Install the chart overlay. render_viz tool results auto-mount beside
+  // Momo as a CSS3DObject parented to the same scene — camera orbit
+  // parallaxes it, the platter+beam companion render in WebGL (inside
+  // bloom), and the DOM card stays crisp. The CSS3DRenderer's DOM
+  // container is appended INSIDE #stage so it inherits any flip(sx,sy)
+  // transform applied for mirror rigs.
+  //
+  // Camera is declared further down but installChartLayer accepts null
+  // early — we refresh the references in a follow-up call after camera
+  // exists. Simpler: construct the camera BEFORE install. We do that by
+  // moving the installChartLayer call after camera setup (below).
+
+  // Wider FOV + slight downtilt so the pedestal, orbiting crystals, and
+  // nebula frame into the shot alongside Omo instead of being cropped.
+  const camera = new THREE.PerspectiveCamera(44, 1, 0.1, 100);
+  let camDist = 6.5;
+  function placeCamera() {
+    camera.position.set(0, 0.25, camDist);
+    camera.lookAt(0, -0.25, 0);
+  }
+  placeCamera();
+
+  // Drag-to-orbit. The reflector canvas also acts as a big tap-target for
+  // connect/disconnect, so we need to suppress the synthetic click that
+  // fires at the end of a drag — see dragSuppress below.
+  const controls = new OrbitControls(camera, canvas);
+  controls.enableDamping = true;
+  controls.dampingFactor = 0.1;
+  controls.enablePan = false;
+  controls.minDistance = 3.2;
+  controls.maxDistance = 9;
+  controls.minPolarAngle = Math.PI * 0.2;
+  controls.maxPolarAngle = Math.PI * 0.75;
+  controls.target.set(0, -0.25, 0);
+  controls.rotateSpeed = 0.8;
+  controls.zoomSpeed = 0.6;
+  controls.update();
+
+  // Now that scene + camera exist, install the chart layer in 3D mode.
+  // The CSS3DRenderer's DOM is appended inside #stage so it inherits
+  // any flip transform. Pedestal pulse is wired through sceneCtl.
+  installChartLayer({
+    avatarObj: avatar,
+    stageEl: document.getElementById('stage'),
+    scene,
+    camera,
+    renderer,
+    webglCanvas: canvas,
+    CSS3DObject,
+    CSS3DRenderer,
+    sceneCtl: { pulsePedestal: () => sceneCtl.pulsePedestal && sceneCtl.pulsePedestal() },
+  });
+
+  // Auto-projection: subscribe to /omo/ws for live events from autonomous
+  // producers (Stripe sales, Gmail inbox, agent completion flourishes)
+  // and mount them onto window.__holoStage without a voice/tool round-trip.
+  // Voice-driven render_viz calls still flow through the /tool response
+  // path below — this channel is for cards Momo doesn't explicitly ask for.
+  const { installAutoProject } = await import('./auto-project.js');
+  installAutoProject();
+
+  // Post: bloom only. No chromatic aberration, no scanlines — those would
+  // reflect as coloured noise in the hologram. Keep bloom punchy so Momo
+  // survives the reflection loss.
+  const composer = new EffectComposer(renderer);
+  composer.addPass(new RenderPass(scene, camera));
+  // strength 0.8, radius 0.85, threshold 0.58. Threshold used to be 0.35,
+  // which put mid-tone specular on the head & antenna right at the
+  // boundary — as Momo rotated it toggled above/below, producing a flash
+  // every few seconds. 0.58 means only the truly bright bits (eye shines,
+  // orb core) bloom, consistent at every angle.
+  const bloom = new UnrealBloomPass(new THREE.Vector2(1024, 1024), 0.8, 0.85, 0.58);
+  composer.addPass(bloom);
+
+  // Canvas is always square and centered — reflective displays typically
+  // have a circular or square projection region, so letterboxing with
+  // black is safer than a widescreen fill.
+  function layout() {
+    const size = Math.floor(Math.min(window.innerWidth, window.innerHeight));
+    canvas.width = size * Math.min(window.devicePixelRatio, 2);
+    canvas.height = size * Math.min(window.devicePixelRatio, 2);
+    canvas.style.width = size + 'px';
+    canvas.style.height = size + 'px';
+    renderer.setSize(size, size, false);
+    composer.setSize(size, size);
+    camera.aspect = 1;
+    camera.updateProjectionMatrix();
+  }
+  layout();
+  window.addEventListener('resize', layout);
+  window.addEventListener('orientationchange', layout);
+
+  // ─── UI controls ─────────────────────────────────────────────────────
+  const stage = document.getElementById('stage');
+  const $ = (id) => document.getElementById(id);
+  const flipV = $('flipV'), flipH = $('flipH');
+  const pedestalCb = $('pedestal'), autoRotateCb = $('autoRotate');
+  const zoom = $('zoom'), bright = $('bright');
+
+  function applyFlip() {
+    const sx = flipH.checked ? -1 : 1;
+    const sy = flipV.checked ? -1 : 1;
+    stage.style.transform = `scale(${sx}, ${sy})`;
+  }
+  flipV.addEventListener('change', applyFlip);
+  flipH.addEventListener('change', applyFlip);
+
+  // Pedestal toggle: rebuild the scene switching minimal on/off. Cheaper
+  // than toggling individual meshes since we already have a factory.
+  // (sceneCtl itself is declared earlier so chart-layer.js can reference
+  // its pulsePedestal via a closure.)
+  let currentMinimal = false;
+  function rebuildScene(minimal) {
+    if (minimal === currentMinimal) return;
+    currentMinimal = minimal;
+    // Dismount any live chart first — chart-layer's 3D mount holds a
+    // scene reference captured at install time, so leaving the platter/
+    // beam/sparkles attached across a scene swap orphans them against a
+    // Scene that's no longer being rendered. Clearing up front keeps the
+    // toggle clean; the user can re-ask and the chart re-mounts into the
+    // new scene automatically.
+    try { window.__holoChart?.dismount?.(); } catch {}
+    scene.remove(avatar);
+    const next = createHologramScene({ minimal });
+    next.scene.add(avatar);
+    sceneCtl = next;
+    composer.passes.forEach((p) => { if (p.scene) p.scene = next.scene; });
+    // Point chart-layer's captured closure at the new scene so a
+    // subsequent chart mount attaches and renders correctly.
+    try { window.__holoChart?.rebind?.({ scene: next.scene, camera, sceneCtl: next }); } catch {}
+  }
+  pedestalCb.addEventListener('change', () => rebuildScene(!pedestalCb.checked));
+
+  zoom.addEventListener('input', () => {
+    camDist = parseFloat(zoom.value);
+    // Re-seat the camera at camDist along its current orbit direction so the
+    // slider works alongside OrbitControls without fighting it.
+    const dir = camera.position.clone().sub(controls.target).normalize();
+    camera.position.copy(controls.target).add(dir.multiplyScalar(camDist));
+    controls.update();
+  });
+  bright.addEventListener('input', () => {
+    renderer.toneMappingExposure = parseFloat(bright.value);
+  });
+
+  // ─── Auto-hide UI ────────────────────────────────────────────────────
+  let hideTimer = null;
+  function showUI() {
+    document.body.classList.add('show-ui');
+    clearTimeout(hideTimer);
+    hideTimer = setTimeout(() => document.body.classList.remove('show-ui'), 2800);
+  }
+  ['mousemove', 'touchstart', 'keydown'].forEach((ev) =>
+    window.addEventListener(ev, showUI, { passive: true })
+  );
+  showUI();
+
+  // ─── Fullscreen (F) ──────────────────────────────────────────────────
+  window.addEventListener('keydown', (e) => {
+    if (e.key === 'f' || e.key === 'F') {
+      if (!document.fullscreenElement) document.documentElement.requestFullscreen();
+      else document.exitFullscreen();
+    }
+    if (e.key === 'v' || e.key === 'V') { flipV.checked = !flipV.checked; applyFlip(); }
+    if (e.key === 'h' || e.key === 'H') { flipH.checked = !flipH.checked; applyFlip(); }
+  });
+
+  // ─── Speech: Google Gemini Live over WebSocket ───────────────────────
+  // Architecture: browser connects directly to Gemini Live using a short-
+  // lived token minted by /session. Our real GEMINI_API_KEY never ships
+  // to the browser. The @google/genai SDK handles the WebSocket + PCM
+  // encode/decode framing; we just feed it mic PCM chunks and play back
+  // the audio chunks it emits.
+  //
+  //   mic    → AudioWorklet(16 kHz PCM16) → base64 → session.sendRealtimeInput
+  //   model  → serverContent.modelTurn.parts[].inlineData (PCM16 @ 24 kHz)
+  //          → AudioBuffer → cute-voice chain → speakers + mouth analyser
+  let liveSession = null;         // Live API session
+  let micCtx = null;              // AudioContext @ 16 kHz for mic capture
+  let micStream = null;           // raw mic MediaStream (for cleanup)
+  let micNode = null;             // AudioWorkletNode
+  let playCtx = null;             // AudioContext @ 24 kHz for playback
+  let cuteInput = null;           // first node of the cute-voice chain
+  let analyser = null, analyserData = null;
+  let playHead = 0;               // scheduler cursor for gapless PCM playback
+  let playingSources = [];        // active AudioBufferSourceNodes (for barge-in)
+  let connecting = false, connected = false;
+  let sessionInfo = null;
+
+  function setBodyState(state) {
+    document.body.classList.remove('rt-connecting', 'rt-connected', 'rt-listening', 'rt-error');
+    if (state) document.body.classList.add(state);
+  }
+
+  // ─── Lazy SDK import + session connect ───────────────────────────────
+  async function connect() {
+    if (connecting || connected) return;
+    connecting = true;
+    setBodyState('rt-connecting');
+    diag('fetching token');
+
+    try {
+      const r = await fetch('/session', { method: 'POST' });
+      if (!r.ok) throw new Error(`/session ${r.status}: ${await r.text()}`);
+      sessionInfo = await r.json();
+    } catch (err) {
+      diag('session failed: ' + err.message, true);
+      setBodyState('rt-error');
+      connecting = false;
+      return;
+    }
+    if (!sessionInfo?.token) {
+      diag('no token in session response', true);
+      setBodyState('rt-error');
+      connecting = false;
+      return;
+    }
+    diag('token ok · loading sdk');
+
+    let GoogleGenAI;
+    try {
+      ({ GoogleGenAI } = await import('https://esm.sh/@google/genai@1.50.1'));
+    } catch (err) {
+      diag('sdk import failed: ' + err.message, true);
+      setBodyState('rt-error');
+      connecting = false;
+      return;
+    }
+
+    try {
+      await setupAudio();
+      diag('audio ok · opening ws');
+    } catch (err) {
+      diag('audio setup failed: ' + err.message, true);
+      setBodyState('rt-error');
+      teardown();
+      connecting = false;
+      return;
+    }
+
+    const ai = new GoogleGenAI({
+      apiKey: sessionInfo.token,
+      httpOptions: { apiVersion: 'v1alpha' },
+    });
+    try {
+      liveSession = await ai.live.connect({
+        model: sessionInfo.model,
+        config: sessionInfo.setupConfig,
+        callbacks: {
+          onopen: () => { diag('ws open'); },
+          onmessage: (msg) => handleLiveMessage(msg),
+          onerror: (e) => { diag('ws error: ' + (e.message || e), true); setBodyState('rt-error'); },
+          onclose: (e) => {
+            // Surface the close reason on screen — Gemini puts useful
+            // diagnostics here (e.g. "field X deprecated", auth failures).
+            const reason = e?.reason || ('code ' + (e?.code ?? '?'));
+            const isError = e?.code && e.code !== 1000;
+            console.log('[gemini] ws close', e?.code, e?.reason);
+            if (connected || connecting) {
+              diag('ws closed: ' + reason, isError);
+              if (isError) setBodyState('rt-error');
+              teardown();
+            }
+          },
+        },
+      });
+    } catch (err) {
+      diag('ws connect failed: ' + err.message, true);
+      setBodyState('rt-error');
+      teardown();
+      connecting = false;
+      return;
+    }
+
+    connecting = false;
+    connected = true;
+    setBodyState('rt-connected');
+    diag('LIVE · 和 omo 说话');
+  }
+
+  function teardown() {
+    connected = false;
+    connecting = false;
+    avatar.userData.speaking = false;
+    avatar.userData.listening = false;
+    avatar.userData.mouthDrive = null;
+    stopAllPlayback();
+    // Order matters: detach the worklet handler BEFORE closing the context
+    // so in-flight chunks don't race with the close.
+    if (micNode) { try { micNode.port.onmessage = null; micNode.disconnect(); } catch {} micNode = null; }
+    if (liveSession) { try { liveSession.close(); } catch {} liveSession = null; }
+    if (micStream) { micStream.getTracks().forEach((t) => t.stop()); micStream = null; }
+    if (micCtx) { try { micCtx.close(); } catch {} micCtx = null; }
+    if (playCtx) { try { playCtx.close(); } catch {} playCtx = null; }
+    cuteInput = null; analyser = null; analyserData = null; playHead = 0;
+    setBodyState(null);
+  }
+
+  // ─── Mic capture: AudioWorklet → PCM16 @ 16 kHz → base64 → Gemini ────
+  async function setupAudio() {
+    micStream = await navigator.mediaDevices.getUserMedia({ audio: true });
+
+    // One context per direction. Gemini expects 16 kHz in, emits 24 kHz out.
+    // Pinning the context sample rates to those targets skips any resample.
+    micCtx = new AudioContext({ sampleRate: 16000 });
+    await micCtx.audioWorklet.addModule('/pcm-worklet.js');
+    const src = micCtx.createMediaStreamSource(micStream);
+    micNode = new AudioWorkletNode(micCtx, 'pcm16-worklet');
+    micNode.port.onmessage = (e) => {
+      // Guard: only forward audio while we have a live, connected session.
+      // Without this, stale worklet messages after teardown spam the SDK
+      // with "CLOSING or CLOSED" warnings.
+      if (!liveSession || !connected) return;
+      const b64 = arrayBufferToBase64(e.data);
+      try {
+        // Gemini 3.1 Flash Live wants `audio` (not the deprecated `media`)
+        // for realtime input on the BidiGenerateContent wire format.
+        liveSession.sendRealtimeInput({
+          audio: { data: b64, mimeType: 'audio/pcm;rate=16000' },
+        });
+      } catch (err) {
+        console.warn('[gemini] send failed', err);
+      }
+    };
+    src.connect(micNode);
+    // micNode.connect(micCtx.destination) would create feedback — don't.
+
+    // Playback context + cute voice chain (shared with the mouth analyser).
+    playCtx = new AudioContext({ sampleRate: 24000 });
+    playHead = playCtx.currentTime;
+    cuteInput = buildCuteChain(playCtx);
+  }
+
+  // Cute-voice chain: incoming PCM → notch → highshelf → (dry + chorus +
+  // angelic reverb) → speakers. Mouth analyser taps the bright signal.
+  function buildCuteChain(ctx) {
+    const input = ctx.createGain();
+
+    const notch = ctx.createBiquadFilter();
+    notch.type = 'peaking';
+    notch.frequency.value = 260;
+    notch.Q.value = 0.9;
+    notch.gain.value = -2.5;
+
+    const bright = ctx.createBiquadFilter();
+    bright.type = 'highshelf';
+    bright.frequency.value = 3200;
+    bright.gain.value = 4;
+
+    input.connect(notch).connect(bright);
+
+    const dry = ctx.createGain();
+    dry.gain.value = 0.95;
+    bright.connect(dry).connect(ctx.destination);
+
+    // Chorus tap
+    const d1 = ctx.createDelay(0.05);
+    d1.delayTime.value = 0.014;
+    const lfo1 = ctx.createOscillator();
+    const lfo1g = ctx.createGain();
+    lfo1.frequency.value = 1.3;
+    lfo1g.gain.value = 0.0028;
+    lfo1.connect(lfo1g).connect(d1.delayTime);
+    lfo1.start();
+    const chorusG = ctx.createGain();
+    chorusG.gain.value = 0.22;
+    bright.connect(d1).connect(chorusG).connect(ctx.destination);
+
+    // Light angelic reverb
+    const conv = ctx.createConvolver();
+    conv.buffer = makeImpulse(ctx, 0.7, 2.5);
+    const revG = ctx.createGain();
+    revG.gain.value = 0.14;
+    bright.connect(conv).connect(revG).connect(ctx.destination);
+
+    // Mouth analyser
+    analyser = ctx.createAnalyser();
+    analyser.fftSize = 512;
+    analyser.smoothingTimeConstant = 0.6;
+    bright.connect(analyser);
+    analyserData = new Uint8Array(analyser.frequencyBinCount);
+
+    return input;
+  }
+
+  function makeImpulse(ctx, duration, decay) {
+    const len = Math.floor(ctx.sampleRate * duration);
+    const buf = ctx.createBuffer(2, len, ctx.sampleRate);
+    for (let c = 0; c < 2; c++) {
+      const ch = buf.getChannelData(c);
+      for (let i = 0; i < len; i++) {
+        ch[i] = (Math.random() * 2 - 1) * Math.pow(1 - i / len, decay);
+      }
+    }
+    return buf;
+  }
+
+  function sampleMouth() {
+    if (!analyser || !analyserData) return null;
+    analyser.getByteFrequencyData(analyserData);
+    let sum = 0, n = 0;
+    for (let i = 2; i < Math.min(48, analyserData.length); i++) { sum += analyserData[i]; n++; }
+    const avg = sum / (n * 255);
+    return Math.min(1, Math.pow(avg * 1.6, 0.9));
+  }
+
+  // Schedule a PCM16 chunk (arrived from Gemini) for gapless playback.
+  function enqueuePcmChunk(int16, sampleRate) {
+    if (!playCtx || !cuteInput) return;
+    const buf = playCtx.createBuffer(1, int16.length, sampleRate);
+    const ch = buf.getChannelData(0);
+    for (let i = 0; i < int16.length; i++) ch[i] = int16[i] / 0x8000;
+    const src = playCtx.createBufferSource();
+    src.buffer = buf;
+    src.connect(cuteInput);
+    const startAt = Math.max(playHead, playCtx.currentTime + 0.02);
+    src.start(startAt);
+    playHead = startAt + buf.duration;
+    playingSources.push(src);
+    src.onended = () => {
+      playingSources = playingSources.filter((s) => s !== src);
+    };
+  }
+
+  // Barge-in: stop all scheduled sources and reset the cursor.
+  function stopAllPlayback() {
+    playingSources.forEach((s) => { try { s.stop(); } catch {} });
+    playingSources = [];
+    if (playCtx) playHead = playCtx.currentTime;
+  }
+
+  // Momo ingest — pushes finalized transcripts onto the Data Core ring
+  // so /hq's LOG and /agents-grid's ticker both see voice activity live.
+  let momoIngest = null;
+  async function ensureMomoIngest() {
+    if (momoIngest) return momoIngest;
+    try {
+      const mod = await import('./momo-ingest.js');
+      momoIngest = mod.attachMomoIngest({
+        page: 'reflector',
+        getSession: () => ({ model: sessionInfo?.model, voice: sessionInfo?.voice }),
+      });
+    } catch (err) { diag('momo-ingest import failed: ' + err.message); }
+    return momoIngest;
+  }
+
+  let momoReactions = null;
+  async function ensureMomoReactions() {
+    if (momoReactions) return momoReactions;
+    try {
+      const mod = await import('./momo-reactions.js');
+      momoReactions = mod.attachMomoReactions({ avatar });
+    } catch (err) { diag('momo-reactions import failed: ' + err.message); }
+    return momoReactions;
+  }
+
+  // ─── Gemini Live server messages ─────────────────────────────────────
+  function handleLiveMessage(msg) {
+    // setup complete → the session is ready to receive mic audio.
+    if (msg.setupComplete) return;
+    ensureMomoIngest().then((ing) => ing && ing.onLiveMessage(msg));
+    ensureMomoReactions().then((r) => r && r.onLiveMessage(msg));
+
+    const sc = msg.serverContent;
+    if (sc) {
+      // Audio chunks + text from Momo.
+      if (sc.modelTurn?.parts) {
+        for (const part of sc.modelTurn.parts) {
+          const inline = part.inlineData;
+          if (inline && typeof inline.data === 'string' && /audio\/pcm/i.test(inline.mimeType || '')) {
+            const rate = extractRate(inline.mimeType) || 24000;
+            const int16 = base64ToInt16(inline.data);
+            if (!avatar.userData.speaking) {
+              avatar.userData.speaking = true;
+              setBodyState('rt-connected');
+            }
+            enqueuePcmChunk(int16, rate);
+          }
+        }
+      }
+
+      // User speech transcription → caption area (no #heard in reflector,
+      // so we just log it; holo_avatar.html shows it in the UI).
+      if (sc.inputTranscription?.text) {
+        console.log('[gemini heard]', sc.inputTranscription.text);
+      }
+      if (sc.outputTranscription?.text) {
+        console.log('[gemini said]', sc.outputTranscription.text);
+      }
+
+      // Turn-taking signals.
+      if (sc.interrupted) {
+        stopAllPlayback();
+        avatar.userData.speaking = false;
+      }
+      if (sc.generationComplete || sc.turnComplete) {
+        // Let the queued audio drain before flipping speaking off.
+        const drain = Math.max(0, (playHead - (playCtx?.currentTime || 0)) * 1000);
+        setTimeout(() => {
+          if (playingSources.length === 0) avatar.userData.speaking = false;
+        }, drain + 60);
+      }
+    }
+
+    // Gemini VAD: user started/stopped speaking.
+    const activity = msg.serverContent?.inputActivity || msg.inputActivity;
+    if (activity?.start) {
+      avatar.userData.listening = true;
+      if (connected) setBodyState('rt-listening');
+    }
+    if (activity?.end) {
+      avatar.userData.listening = false;
+      if (connected) setBodyState('rt-connected');
+    }
+
+    // Tool / function calls.
+    if (msg.toolCall?.functionCalls) {
+      for (const call of msg.toolCall.functionCalls) handleFunctionCall(call);
+    }
+  }
+
+  // ── Tool-name → humanized phrase for the thinking-state card ──────────
+  // Viz tools (render/highlight/dismiss) never surface a thinking card —
+  // the chart mount IS their feedback, and a ghost card in front would
+  // race the real one. Everything else gets a short phrase; fall back to
+  // the raw tool name for anything new until we add a phrase for it.
+  const TOOL_PHRASES = {
+    get_user_profile:      { title: 'PROFILE',       detail: 'Looking you up…' },
+    get_recent_orders:     { title: 'RECENT ORDERS', detail: 'Pulling latest orders…' },
+    get_orders_timeseries: { title: 'ORDERS TREND',  detail: 'Crunching the curve…' },
+    get_revenue_breakdown: { title: 'REVENUE MIX',   detail: 'Slicing the pie…' },
+    get_channel_mix:       { title: 'CHANNEL MIX',   detail: 'Summing channels…' },
+    get_ads_performance:   { title: 'ADS',           detail: 'Reading Meta + Google…' },
+    get_customer_stats:    { title: 'CUSTOMERS',     detail: 'Counting countries…' },
+    get_top_products:      { title: 'TOP PRODUCTS',  detail: 'Ranking SKUs…' },
+  };
+  const SILENT_TOOLS = new Set(['render_viz', 'highlight_viz', 'dismiss_viz']);
+
+  let thinkingProjectable = null;
+
+  function showThinking(toolName) {
+    const world = getWorld && getWorld();
+    if (!world || !world.use3D) return;      // 2D fallback pages skip this
+    if (SILENT_TOOLS.has(toolName)) return;  // viz tools speak through charts
+    if (world.getCurrent()) return;          // don't stomp a live chart
+    const phrase = TOOL_PHRASES[toolName] || { title: 'THINKING', detail: toolName };
+    const p = createStatusProjectable({
+      title: phrase.title,
+      detail: phrase.detail,
+      variant: STATUS_VARIANTS.thinking,
+      pose: 'thought',
+      withPlatter: false,
+    });
+    thinkingProjectable = p;
+    try { world.mount(p); } catch (err) { diag('thinking mount err: ' + err.message, true); }
+  }
+
+  function hideThinking() {
+    if (!thinkingProjectable) return;
+    const p = thinkingProjectable;
+    thinkingProjectable = null;
+    try {
+      const world = getWorld && getWorld();
+      if (world && world.getCurrent() === p) world.dismount();
+      else if (p.exit) p.exit();
+    } catch (_) {}
+  }
+
+  async function handleFunctionCall(call) {
+    const { id, name, args } = call;
+    diag('tool: ' + name);
+    showThinking(name);
+    let output;
+    try {
+      const r = await fetch('/tool', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name, arguments: args || {} }),
+      });
+      output = await r.json();
+    } catch (err) { output = { error: String(err) }; }
+    const result = output.result ?? output;
+    hideThinking();
+
+    // Kind-based Projectable dispatch: every projection tool response
+    // (render_viz, render_status, show_media, introduce_agent) carries a
+    // `kind` field. One branch mounts all of them via the factory table
+    // inside chart-layer.js::__holoStage. highlight_viz / dismiss_viz
+    // stay as special cases because they operate on an already-mounted
+    // Projectable rather than creating a new one.
+    if (result && result.kind && window.__holoStage) {
+      try {
+        diag(`mounting ${result.kind} ${result.projectable_id || ''}`.trim());
+        window.__holoStage.mount(result);
+      } catch (err) { diag(`${result.kind} mount err: ${err.message}`, true); }
+    } else if (name === 'highlight_viz' && result && result.ok && window.__holoStage) {
+      try {
+        diag('highlight ' + result.viz_id + ' di=' + result.data_index);
+        window.__holoStage.highlight({
+          vizId: result.viz_id,
+          dataIndex: result.data_index,
+          seriesIndex: result.series_index,
+          label: result.label,
+        });
+      } catch (err) { diag('viz highlight err: ' + err.message, true); }
+    } else if (name === 'dismiss_viz' && result && result.ok && window.__holoStage) {
+      try {
+        diag('dismiss viz');
+        window.__holoStage.dismount();
+      } catch (err) { diag('viz dismiss err: ' + err.message, true); }
+    }
+
+    if (!liveSession) return;
+    try {
+      liveSession.sendToolResponse({
+        functionResponses: [{ id, name, response: { result } }],
+      });
+    } catch (err) {
+      console.warn('[gemini] sendToolResponse failed', err);
+    }
+  }
+
+  // ─── Helpers ─────────────────────────────────────────────────────────
+  function base64ToInt16(b64) {
+    const bin = atob(b64);
+    const len = bin.length;
+    const bytes = new Uint8Array(len);
+    for (let i = 0; i < len; i++) bytes[i] = bin.charCodeAt(i);
+    return new Int16Array(bytes.buffer, bytes.byteOffset, Math.floor(len / 2));
+  }
+  function arrayBufferToBase64(buf) {
+    const bytes = new Uint8Array(buf);
+    let s = '';
+    for (let i = 0; i < bytes.length; i++) s += String.fromCharCode(bytes[i]);
+    return btoa(s);
+  }
+  function extractRate(mimeType) {
+    const m = /rate=(\d+)/i.exec(mimeType || '');
+    return m ? parseInt(m[1], 10) : null;
+  }
+
+  // ─── Space / tap = toggle session ────────────────────────────────────
+  // Debounce: rapid space presses during connect used to stack a disconnect
+  // over an in-flight connect, leaving the WS in CLOSING with a hot mic
+  // still firing. Gate everything on a simple lock.
+  let toggleLock = false;
+  async function toggleSession() {
+    if (toggleLock) { diag('busy — wait'); return; }
+    toggleLock = true;
+    try {
+      if (connected || connecting) { diag('disconnecting'); teardown(); }
+      else { diag('connecting…'); await connect(); }
+    } finally {
+      // Brief cooldown so a double-tap doesn't instantly flip again.
+      setTimeout(() => { toggleLock = false; }, 250);
+    }
+  }
+  connectHandler = toggleSession;
+  diag('ready · press SPACE or tap to connect · press / to type');
+
+  // ─── Shared voice-mode bridge ─────────────────────────────────────────
+  try { window.omoVoiceMode?.enablePtt(true); } catch {}
+  window.addEventListener('omo:voice-want-on', async () => {
+    if (connected || connecting) return;
+    try { await connect(); } catch (err) { console.warn('[voice/on] connect failed', err); }
+  });
+  window.addEventListener('omo:voice-want-off', () => {
+    if (connected || connecting) {
+      try { teardown(); } catch (err) { console.warn('[voice/off] teardown', err); }
+    }
+  });
+
+  // Text-chat input — type to Momo without using the mic. Mounted as a
+  // CSS3DObject in the same scene as the chart panel so it floats in
+  // front of Momo's feet and swings with the orbit camera.
+  const { installTextChat } = await import('./text-chat.js');
+  const chatHandle = installTextChat({
+    getSession: () => liveSession,
+    isConnected: () => connected,
+    connect: async () => { if (!connected && !connecting) await connect(); },
+    diag,
+    mountEl: document.getElementById('stage'),
+    scene,
+    camera,
+    CSS3DObject,
+  });
+
+  // ─── Render loop ─────────────────────────────────────────────────────
+  const clock = new THREE.Clock();
+  renderer.setAnimationLoop(() => {
+    const dt = clock.getDelta();
+    const t = clock.elapsedTime;
+    sceneCtl.update(t, dt);
+    avatar.userData.mouthDrive = avatar.userData.speaking ? sampleMouth() : null;
+    updateAvatar(avatar, t, dt);
+    // Gentle sway instead of a full spin — feels like she's floating and
+    // turning to look at you, not rotating on a turntable.
+    if (autoRotateCb.checked) avatar.rotation.y = Math.sin(t * 0.35) * 0.45;
+    else avatar.rotation.y = 0;
+    controls.update();
+    // Chart-layer per-frame: platter breathing + CSS3DObject billboard.
+    if (window.__holoChart && window.__holoChart.update) {
+      window.__holoChart.update(t, dt);
+    }
+    // Chat pill billboard (3D mode only; no-op otherwise).
+    if (chatHandle && chatHandle.update) chatHandle.update(t, dt);
+    composer.render();
+    // CSS3DRenderer.render must run after the WebGL pass so the DOM layer
+    // appears on top of the canvas (z-index: 10 on its container).
+    if (window.__holoChart && window.__holoChart.renderCss) {
+      window.__holoChart.renderCss();
+    }
+  });
+</script>
+</body>
+</html>

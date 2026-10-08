@@ -1,0 +1,676 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>omo · text</title>
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600&family=Source+Serif+4:opsz,wght@8..60,500;8..60,600&display=swap">
+<style>
+  /* omo · text-mode — Anthropic-warm light mode.
+     Palette mirrors /hq's html.consumer theme so the chat panel feels
+     native when summoned over the hologram or visited standalone. */
+  :root {
+    color-scheme: light;
+    --bg:           #F5F4ED;     /* page · warm cream */
+    --bg-2:         #FAF9F6;     /* surface · ivory */
+    --bg-3:         #EFEDE4;     /* recessed · sand */
+    --bg-elev:      #FFFFFF;
+    --line:         rgba(45, 42, 38, 0.10);
+    --line-strong:  rgba(45, 42, 38, 0.18);
+    --ink:          #2D2A26;     /* primary text · warm near-black */
+    --ink-dim:      #6B6760;     /* secondary · warm grey */
+    --ink-faint:    #A09C92;     /* tertiary · paper grey */
+
+    --accent:       #E37553;     /* omo coral · primary accent */
+    --accent-soft:  rgba(227, 117, 83, 0.10);
+    --accent-edge:  rgba(227, 117, 83, 0.32);
+    --accent-hov:   #C95E3C;
+
+    --cyan:         #6FA8B0;     /* hologram-listening cyan, muted */
+    --cyan-soft:    rgba(111, 168, 176, 0.14);
+    --cyan-edge:    rgba(111, 168, 176, 0.40);
+
+    --user-bubble:  rgba(227, 117, 83, 0.08);
+    --user-edge:    rgba(227, 117, 83, 0.30);
+    --omo-bubble:   #FFFFFF;
+    --omo-edge:     rgba(45, 42, 38, 0.10);
+
+    --shadow-sm:    0 1px 0 rgba(45, 42, 38, 0.04);
+    --shadow:       0 2px 6px rgba(45, 42, 38, 0.06);
+    --shadow-lg:    0 8px 28px rgba(45, 42, 38, 0.10), 0 2px 4px rgba(45, 42, 38, 0.04);
+
+    --radius:       12px;
+    --radius-sm:    8px;
+    --radius-lg:    18px;
+
+    --sans:  "Inter", -apple-system, BlinkMacSystemFont, "SF Pro Text", "Helvetica Neue", Arial, sans-serif;
+    --serif: "Source Serif 4", "Tiempos Headline", "Iowan Old Style", Georgia, serif;
+    --mono:  "JetBrains Mono", "SF Mono", ui-monospace, Menlo, Consolas, monospace;
+  }
+  * { box-sizing: border-box; }
+  html, body {
+    margin: 0; padding: 0;
+    background: var(--bg); color: var(--ink);
+    font-family: var(--sans);
+    font-size: 14px; line-height: 1.55;
+    height: 100%; overflow: hidden;
+    -webkit-font-smoothing: antialiased;
+    text-rendering: optimizeLegibility;
+  }
+  body {
+    background:
+      radial-gradient(900px 480px at 8% -10%, rgba(227, 117, 83, 0.06), transparent 65%),
+      radial-gradient(720px 420px at 110% 110%, rgba(111, 168, 176, 0.07), transparent 65%),
+      var(--bg);
+  }
+  /* When loaded inside the cylinder's glass overlay, the parent provides
+     the hologram backdrop — make our document transparent so the user
+     sees the avatar/hologram through the chat panel. */
+  body.in-iframe { background: transparent; }
+  body.in-iframe .app { padding: 0 14px; }
+
+  .app {
+    display: flex; flex-direction: column;
+    height: 100vh; max-width: 880px; margin: 0 auto;
+    padding: 0 22px;
+  }
+
+  /* ─── Topbar ─────────────────────────────────────────────────────── */
+  header.bar {
+    display: flex; align-items: center; gap: 12px;
+    padding: 18px 4px 14px;
+    border-bottom: 1px solid var(--line);
+    color: var(--ink-dim);
+    font: 500 11px/1 var(--mono);
+    letter-spacing: 0.16em; text-transform: uppercase;
+  }
+  header.bar .dot {
+    width: 8px; height: 8px; border-radius: 50%;
+    background: var(--accent);
+    box-shadow: 0 0 0 3px rgba(227, 117, 83, 0.18);
+    animation: pulse 2.2s ease-in-out infinite;
+  }
+  @keyframes pulse {
+    0%,100% { opacity: 1; transform: scale(1); }
+    50%     { opacity: .55; transform: scale(0.92); }
+  }
+  header.bar .title {
+    font: 600 14px/1 var(--serif);
+    color: var(--ink); letter-spacing: 0.01em; text-transform: none;
+  }
+  header.bar .tag { color: var(--ink-faint); font-weight: 400; }
+  header.bar .spacer { flex: 1; }
+  header.bar button {
+    background: var(--bg-2);
+    color: var(--ink-dim);
+    border: 1px solid var(--line);
+    border-radius: var(--radius-sm);
+    padding: 6px 12px;
+    font: 500 10.5px/1 var(--mono);
+    letter-spacing: 0.12em;
+    cursor: pointer;
+    transition: all .15s ease;
+  }
+  header.bar button:hover {
+    color: var(--accent);
+    border-color: var(--accent-edge);
+    background: var(--accent-soft);
+  }
+
+  /* ─── Transcript ─────────────────────────────────────────────────── */
+  main.scroll {
+    flex: 1; overflow-y: auto;
+    padding: 22px 4px 10px;
+    scroll-behavior: smooth;
+  }
+  main.scroll::-webkit-scrollbar { width: 8px; }
+  main.scroll::-webkit-scrollbar-track { background: transparent; }
+  main.scroll::-webkit-scrollbar-thumb {
+    background: var(--line-strong); border-radius: 4px;
+  }
+  main.scroll::-webkit-scrollbar-thumb:hover { background: var(--ink-faint); }
+
+  .turn { margin-bottom: 18px; display: flex; flex-direction: column; }
+  .turn.user { align-items: flex-end; }
+  .turn.omo  { align-items: flex-start; }
+
+  .who {
+    font: 500 9.5px/1 var(--mono);
+    letter-spacing: 0.18em; text-transform: uppercase;
+    margin-bottom: 6px; color: var(--ink-faint);
+  }
+  .turn.user .who { color: var(--accent); }
+  .turn.omo  .who { color: var(--cyan); }
+
+  .bubble {
+    max-width: 86%;
+    padding: 11px 15px;
+    border: 1px solid;
+    border-radius: var(--radius);
+    box-shadow: var(--shadow-sm);
+    white-space: pre-wrap; word-wrap: break-word;
+    font-size: 14px; line-height: 1.55;
+  }
+  .turn.user .bubble {
+    background: var(--user-bubble);
+    border-color: var(--user-edge);
+    color: var(--ink);
+    border-top-right-radius: 4px;
+  }
+  .turn.omo  .bubble {
+    background: var(--omo-bubble);
+    border-color: var(--omo-edge);
+    color: var(--ink);
+    border-top-left-radius: 4px;
+  }
+  .bubble code {
+    background: var(--bg-3);
+    color: var(--accent-hov);
+    padding: 1px 6px; border-radius: 4px;
+    font: 500 12.5px/1.4 var(--mono);
+  }
+  .bubble strong { color: var(--ink); font-weight: 600; }
+  .bubble em { color: var(--accent-hov); font-style: italic; }
+  .bubble a { color: var(--accent); text-underline-offset: 3px; }
+  .bubble a:hover { color: var(--accent-hov); }
+
+  /* ─── Tool call indicators ───────────────────────────────────────── */
+  .tools {
+    max-width: 86%;
+    margin-top: 8px;
+    display: flex; flex-direction: column; gap: 4px;
+  }
+  .toolchip {
+    font: 500 10.5px/1.5 var(--mono);
+    letter-spacing: 0.10em; text-transform: uppercase;
+    color: var(--ink-dim);
+    border-left: 2px solid var(--cyan-edge);
+    padding: 4px 10px;
+    background: var(--cyan-soft);
+    border-radius: 0 var(--radius-sm) var(--radius-sm) 0;
+  }
+  .toolchip .name { color: var(--cyan); margin-right: 8px; font-weight: 600; }
+  .toolchip .summary {
+    color: var(--ink-dim);
+    text-transform: none; letter-spacing: 0.02em;
+    font-weight: 400;
+  }
+  .toolchip.error { border-left-color: var(--accent-edge); background: var(--accent-soft); }
+  .toolchip.error .name    { color: var(--accent-hov); }
+  .toolchip.error .summary { color: var(--accent-hov); }
+
+  /* ─── Embedded viz ───────────────────────────────────────────────── */
+  .viz-mount {
+    margin-top: 12px; max-width: 100%;
+    border: 1px solid var(--line);
+    background: var(--bg-elev);
+    border-radius: var(--radius);
+    overflow: hidden;
+    box-shadow: var(--shadow);
+  }
+  .viz-mount iframe {
+    display: block; border: 0;
+    width: 100%; max-width: 720px;
+    background: var(--bg-elev);
+  }
+  .viz-mount.size-square iframe { max-width: 480px; }
+  .viz-mount.size-stat iframe   { max-width: 360px; }
+  .viz-mount-head {
+    padding: 8px 12px;
+    font: 500 10px/1 var(--mono);
+    letter-spacing: 0.14em; text-transform: uppercase;
+    color: var(--ink-dim);
+    border-bottom: 1px solid var(--line);
+    background: var(--bg-3);
+    display: flex; gap: 10px; align-items: center;
+  }
+  .viz-mount-head .vid { color: var(--ink-faint); }
+
+  /* ─── Inline pane card ───────────────────────────────────────────── */
+  .pane-card {
+    margin-top: 12px; max-width: 100%;
+    border: 1px solid var(--accent-edge);
+    background: var(--accent-soft);
+    border-radius: var(--radius);
+    padding: 12px 16px;
+    display: flex; flex-direction: column; gap: 4px;
+    box-shadow: var(--shadow-sm);
+  }
+  .pane-card .label {
+    font: 500 10px/1 var(--mono);
+    letter-spacing: 0.14em; text-transform: uppercase;
+    color: var(--accent-hov);
+  }
+  .pane-card .title { color: var(--ink); font-weight: 600; }
+  .pane-card a {
+    color: var(--accent); text-decoration: none;
+    font: 500 12px/1.4 var(--mono);
+    text-underline-offset: 3px;
+  }
+  .pane-card a:hover { color: var(--accent-hov); text-decoration: underline; }
+
+  /* ─── Status pill ────────────────────────────────────────────────── */
+  .status-pill {
+    margin-top: 10px; display: inline-block;
+    padding: 5px 12px;
+    font: 500 10.5px/1 var(--mono);
+    letter-spacing: 0.12em; text-transform: uppercase;
+    color: var(--cyan);
+    border: 1px solid var(--cyan-edge);
+    background: var(--cyan-soft);
+    border-radius: 999px;
+  }
+  .status-pill.alert    {
+    color: var(--accent-hov);
+    border-color: var(--accent-edge);
+    background: var(--accent-soft);
+  }
+  .status-pill.complete {
+    color: #3E7B5A;
+    border-color: rgba(62, 123, 90, 0.32);
+    background: rgba(62, 123, 90, 0.10);
+  }
+
+  /* ─── Composer ───────────────────────────────────────────────────── */
+  footer.composer {
+    border-top: 1px solid var(--line);
+    padding: 14px 4px 18px;
+    display: flex; gap: 10px; align-items: flex-end;
+  }
+  textarea {
+    flex: 1;
+    background: var(--bg-elev);
+    color: var(--ink);
+    border: 1px solid var(--line);
+    border-radius: var(--radius);
+    padding: 12px 14px;
+    font: 400 14px/1.5 var(--sans);
+    resize: none;
+    min-height: 46px; max-height: 180px;
+    transition: border-color .15s ease, box-shadow .15s ease;
+    box-shadow: var(--shadow-sm);
+  }
+  textarea:focus {
+    outline: none;
+    border-color: var(--accent-edge);
+    box-shadow: 0 0 0 3px var(--accent-soft);
+  }
+  textarea::placeholder { color: var(--ink-faint); }
+  button.send {
+    background: var(--accent);
+    color: #FFFFFF;
+    border: 0;
+    border-radius: var(--radius);
+    padding: 12px 22px;
+    font: 600 11.5px/1 var(--mono);
+    letter-spacing: 0.14em; text-transform: uppercase;
+    cursor: pointer;
+    min-height: 46px;
+    box-shadow: var(--shadow);
+    transition: background .15s ease, transform .12s ease, box-shadow .15s ease;
+  }
+  button.send:hover {
+    background: var(--accent-hov);
+    transform: translateY(-1px);
+    box-shadow: var(--shadow-lg);
+  }
+  button.send:active { transform: translateY(0); }
+  button.send:disabled {
+    opacity: 0.42; cursor: not-allowed;
+    transform: none; box-shadow: var(--shadow-sm);
+  }
+
+  /* ─── Thinking indicator ─────────────────────────────────────────── */
+  .thinking {
+    display: flex; gap: 6px;
+    padding: 12px 16px;
+    border: 1px solid var(--omo-edge);
+    background: var(--omo-bubble);
+    border-radius: var(--radius);
+    border-top-left-radius: 4px;
+    width: fit-content;
+    box-shadow: var(--shadow-sm);
+  }
+  .thinking span {
+    width: 7px; height: 7px; border-radius: 50%;
+    background: var(--cyan);
+    animation: blink 1.2s ease-in-out infinite;
+  }
+  .thinking span:nth-child(2) { animation-delay: 0.18s; }
+  .thinking span:nth-child(3) { animation-delay: 0.36s; }
+  @keyframes blink {
+    0%, 80%, 100% { opacity: 0.30; transform: scale(0.85); }
+    40%           { opacity: 1;    transform: scale(1); }
+  }
+
+  /* ─── Empty state ────────────────────────────────────────────────── */
+  .empty {
+    color: var(--ink-faint);
+    font-size: 13px;
+    padding: 52px 0;
+    text-align: center;
+    letter-spacing: 0.02em;
+  }
+  .empty .face {
+    font-size: 40px;
+    color: var(--accent);
+    margin-bottom: 14px;
+    letter-spacing: 0;
+  }
+  .empty .hint {
+    margin-top: 14px;
+    font: 400 12px/1.6 var(--mono);
+    color: var(--ink-faint);
+  }
+  .empty .hint code {
+    color: var(--accent-hov);
+    background: var(--accent-soft);
+    padding: 2px 7px;
+    border-radius: 4px;
+    font-weight: 500;
+  }
+</style>
+</head>
+<body>
+<div class="app">
+  <header class="bar">
+    <span class="dot"></span>
+    <span class="title">omo</span>
+    <span class="tag">· text mode</span>
+    <span class="spacer"></span>
+    <span class="tag" id="modelTag">flash</span>
+    <button id="resetBtn" title="Clear conversation">RESET</button>
+  </header>
+
+  <main class="scroll" id="scroll">
+    <div class="empty" id="emptyState">
+      <div class="face">(◕‿◕)</div>
+      <div>full omo, just typed — same tools, same persona, same brain</div>
+      <div class="hint">try <code>go to hq</code> · <code>draft a reply to Sarah</code> · <code>show me last week's revenue</code></div>
+    </div>
+  </main>
+
+  <footer class="composer">
+    <textarea id="input" placeholder="message omo…  (Enter to send · Shift+Enter for newline)" rows="1" autofocus></textarea>
+    <button id="send" class="send">SEND</button>
+  </footer>
+</div>
+
+<script type="module">
+  const scrollEl   = document.getElementById('scroll');
+  const inputEl    = document.getElementById('input');
+  const sendBtn    = document.getElementById('send');
+  const resetBtn   = document.getElementById('resetBtn');
+  const modelTag   = document.getElementById('modelTag');
+  const emptyState = document.getElementById('emptyState');
+
+  const SID_KEY = 'omo.text.sid';
+  let sid = sessionStorage.getItem(SID_KEY) || null;
+  let pending = false;
+
+  // When this page is loaded inside the cylinder's glass overlay, the
+  // parent hosts the real hologram — so we route side-effects (viz, pane,
+  // status) up to the parent instead of rendering heavy inline cards. The
+  // chat panel keeps a compact "▸ opened pane · hq" chip so the user sees
+  // what omo did without losing the floating-modal feel.
+  const IN_IFRAME = window.parent !== window;
+  if (IN_IFRAME) document.body.classList.add('in-iframe');
+
+  function autoresize() {
+    inputEl.style.height = 'auto';
+    inputEl.style.height = Math.min(180, inputEl.scrollHeight) + 'px';
+  }
+  inputEl.addEventListener('input', autoresize);
+
+  inputEl.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter' && !e.shiftKey) {
+      e.preventDefault();
+      send();
+    }
+  });
+
+  // When this page is loaded inside the cylinder's text-overlay iframe,
+  // Esc should dismiss the overlay rather than doing nothing. Let the
+  // parent page listen for this postMessage and close itself.
+  window.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape' && window.parent !== window) {
+      try { window.parent.postMessage({ type: 'omo.text.close' }, '*'); } catch {}
+    }
+  });
+  sendBtn.addEventListener('click', send);
+  resetBtn.addEventListener('click', resetConvo);
+
+  function clearEmpty() {
+    if (emptyState) { emptyState.remove(); }
+  }
+
+  // Cheap markdown — bold, italic, inline code, line breaks. Avoid full
+  // parsers; this is a text bubble, not a docs viewer.
+  function escapeHtml(s) {
+    return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+            .replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+  }
+  function renderMd(text) {
+    let s = escapeHtml(text);
+    s = s.replace(/`([^`\n]+)`/g, '<code>$1</code>');
+    s = s.replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>');
+    s = s.replace(/(^|[\s(])\*([^*\n]+)\*(?=[\s.,!?)]|$)/g, '$1<em>$2</em>');
+    return s;
+  }
+
+  function addUserTurn(text) {
+    clearEmpty();
+    const turn = document.createElement('div');
+    turn.className = 'turn user';
+    turn.innerHTML = `<div class="who">you</div><div class="bubble"></div>`;
+    turn.querySelector('.bubble').textContent = text;
+    scrollEl.appendChild(turn);
+    scrollToBottom();
+  }
+
+  function addThinking() {
+    clearEmpty();
+    const turn = document.createElement('div');
+    turn.className = 'turn omo thinking-turn';
+    turn.innerHTML = `<div class="who">omo</div><div class="thinking"><span></span><span></span><span></span></div>`;
+    scrollEl.appendChild(turn);
+    scrollToBottom();
+    return turn;
+  }
+
+  function addOmoTurn({ text, events, toolCalls }) {
+    clearEmpty();
+    const turn = document.createElement('div');
+    turn.className = 'turn omo';
+
+    const who = document.createElement('div');
+    who.className = 'who';
+    who.textContent = 'omo';
+    turn.appendChild(who);
+
+    // Tool calls (chips above the bubble — flow of "she did this, then said that")
+    if (toolCalls && toolCalls.length) {
+      const tools = document.createElement('div');
+      tools.className = 'tools';
+      for (const tc of toolCalls) {
+        const chip = document.createElement('div');
+        chip.className = 'toolchip' + (String(tc.summary || '').startsWith('error') ? ' error' : '');
+        chip.innerHTML = `<span class="name">▸ ${escapeHtml(tc.name)}</span><span class="summary">${escapeHtml(tc.summary || 'ok')}</span>`;
+        tools.appendChild(chip);
+      }
+      turn.appendChild(tools);
+    }
+
+    // Bubble (text)
+    if (text && text.trim()) {
+      const bubble = document.createElement('div');
+      bubble.className = 'bubble';
+      bubble.innerHTML = renderMd(text);
+      turn.appendChild(bubble);
+    }
+
+    // Render side-effect events. When iframed under the cylinder, forward
+    // each event up so the parent mounts the real viz / pane on the
+    // hologram, and show a compact chip here instead of a heavy inline
+    // card. When standalone, fall through to the inline renderer.
+    if (events && events.length) {
+      for (const ev of events) {
+        if (IN_IFRAME) {
+          try { window.parent.postMessage({ type: 'omo.text.event', event: ev }, '*'); } catch {}
+          const chip = compactEventChip(ev);
+          if (chip) turn.appendChild(chip);
+        } else {
+          const node = renderEvent(ev);
+          if (node) turn.appendChild(node);
+        }
+      }
+    }
+
+    scrollEl.appendChild(turn);
+    scrollToBottom();
+  }
+
+  // One-line chip summarising a side-effect (for iframe mode, where the
+  // real artifact mounts on the cylinder behind the chat panel).
+  function compactEventChip(ev) {
+    const wrap = document.createElement('div');
+    wrap.className = 'tools';
+    const chip = document.createElement('div');
+    chip.className = 'toolchip';
+    let label = '', detail = '';
+    if (ev.kind === 'viz')           { label = '▸ viz';        detail = ev.chart_type || ev.size || ev.viz_id || ''; }
+    else if (ev.kind === 'viz_dismiss') { label = '▸ viz closed'; detail = ev.viz_id || ''; }
+    else if (ev.kind === 'pane')     { label = '▸ pane';       detail = (ev.page || '') + (ev.slot ? ' · ' + ev.slot : ''); }
+    else if (ev.kind === 'pane_dismiss') { label = '▸ pane closed'; detail = ''; }
+    else if (ev.kind === 'status')   { label = '▸ status';     detail = ev.title || ''; }
+    else if (ev.kind === 'notification') { label = '▸ 🔔';     detail = ev.title || ''; }
+    else if (ev.kind === 'tool_error') { chip.classList.add('error'); label = '✗ ' + (ev.name || 'tool'); detail = ev.error || ''; }
+    else { label = '▸ ' + ev.kind; detail = ''; }
+    chip.innerHTML = `<span class="name">${escapeHtml(label)}</span>${detail ? `<span class="summary">${escapeHtml(detail)}</span>` : ''}`;
+    wrap.appendChild(chip);
+    return wrap;
+  }
+
+  function renderEvent(ev) {
+    if (ev.kind === 'viz' && ev.viz_id) {
+      const wrap = document.createElement('div');
+      wrap.className = 'viz-mount size-' + (ev.size || 'wide');
+      const head = document.createElement('div');
+      head.className = 'viz-mount-head';
+      head.innerHTML = `<span>${escapeHtml((ev.chart_type || ev.size || 'viz').toUpperCase())}</span><span class="vid">${escapeHtml(ev.viz_id)}</span>`;
+      const iframe = document.createElement('iframe');
+      iframe.src = '/viz/' + encodeURIComponent(ev.viz_id);
+      iframe.setAttribute('sandbox', 'allow-scripts');
+      iframe.height = ev.height || (ev.size === 'square' ? 480 : ev.size === 'stat' ? 220 : 420);
+      wrap.appendChild(head);
+      wrap.appendChild(iframe);
+      return wrap;
+    }
+    if (ev.kind === 'pane' && ev.url) {
+      const card = document.createElement('div');
+      card.className = 'pane-card';
+      card.innerHTML = `
+        <span class="label">▸ pane · ${escapeHtml(ev.page || 'page')}${ev.slot ? ' · ' + escapeHtml(ev.slot) : ''}</span>
+        <span class="title">${escapeHtml(ev.title || ev.url)}</span>
+        <a href="${escapeHtml(ev.url)}" target="_blank" rel="noopener">open ${escapeHtml(ev.url)} ↗</a>
+      `;
+      return card;
+    }
+    if (ev.kind === 'pane_dismiss' || ev.kind === 'viz_dismiss') {
+      const pill = document.createElement('span');
+      pill.className = 'status-pill';
+      pill.textContent = ev.kind === 'pane_dismiss' ? 'pane closed' : 'viz dismissed';
+      const wrap = document.createElement('div');
+      wrap.appendChild(pill);
+      return wrap;
+    }
+    if (ev.kind === 'status') {
+      const wrap = document.createElement('div');
+      const pill = document.createElement('span');
+      pill.className = 'status-pill ' + (ev.variant || '');
+      pill.textContent = (ev.title || 'status') + (ev.detail ? ' · ' + ev.detail : '');
+      wrap.appendChild(pill);
+      return wrap;
+    }
+    if (ev.kind === 'notification') {
+      const wrap = document.createElement('div');
+      const pill = document.createElement('span');
+      pill.className = 'status-pill';
+      pill.textContent = '🔔 ' + (ev.title || 'notification');
+      wrap.appendChild(pill);
+      return wrap;
+    }
+    if (ev.kind === 'tool_error') {
+      const wrap = document.createElement('div');
+      const pill = document.createElement('span');
+      pill.className = 'status-pill alert';
+      pill.textContent = ev.name + ' · ' + ev.error;
+      wrap.appendChild(pill);
+      return wrap;
+    }
+    return null;
+  }
+
+  function scrollToBottom() {
+    requestAnimationFrame(() => {
+      scrollEl.scrollTop = scrollEl.scrollHeight;
+    });
+  }
+
+  async function send() {
+    if (pending) return;
+    const text = inputEl.value.trim();
+    if (!text) return;
+    inputEl.value = '';
+    autoresize();
+    addUserTurn(text);
+    const thinkingNode = addThinking();
+    pending = true;
+    sendBtn.disabled = true;
+
+    let res;
+    try {
+      const r = await fetch('/text/chat', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ sid, message: text }),
+      });
+      res = await r.json();
+    } catch (err) {
+      thinkingNode.remove();
+      addOmoTurn({ text: '_(network error: ' + (err?.message || err) + ')_', events: [], toolCalls: [] });
+      pending = false; sendBtn.disabled = false;
+      return;
+    }
+    thinkingNode.remove();
+
+    if (res.error) {
+      addOmoTurn({ text: '_(' + res.error + ')_', events: [], toolCalls: [] });
+    } else {
+      if (res.sid) { sid = res.sid; sessionStorage.setItem(SID_KEY, sid); }
+      if (res.model) modelTag.textContent = String(res.model).replace(/^gemini-/, '');
+      addOmoTurn({
+        text: res.text || (res.tool_calls?.length ? '_(tool turn)_' : '_(no reply)_'),
+        events: res.events || [],
+        toolCalls: res.tool_calls || [],
+      });
+    }
+    pending = false; sendBtn.disabled = false;
+    inputEl.focus();
+  }
+
+  async function resetConvo() {
+    if (sid) {
+      try { await fetch('/text/reset', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ sid }) }); }
+      catch {}
+    }
+    sid = null; sessionStorage.removeItem(SID_KEY);
+    scrollEl.innerHTML = '';
+    scrollEl.appendChild(emptyState);
+    inputEl.focus();
+  }
+</script>
+</body>
+</html>

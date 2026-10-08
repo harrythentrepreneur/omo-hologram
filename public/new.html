@@ -1,0 +1,180 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<title>omo — an agentic world for coding</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Instrument+Serif:ital@0;1&family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+<style>
+  :root {
+    --bg:      #F6F4EE;
+    --ink:     #1F1C18;
+    --ink-2:   #5B564F;
+    --ink-3:   #9A958B;
+    --edge:    rgba(31, 28, 24, 0.10);
+    --accent:  #D9603E;
+    --sans:    "Inter", -apple-system, BlinkMacSystemFont, "Helvetica Neue", sans-serif;
+    --serif:   "Instrument Serif", Georgia, serif;
+    --mono:    "JetBrains Mono", ui-monospace, Menlo, monospace;
+    color-scheme: light;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  html, body {
+    background: var(--bg); color: var(--ink);
+    font-family: var(--sans); font-size: 15px; line-height: 1.55;
+    -webkit-font-smoothing: antialiased;
+  }
+  body {
+    min-height: 100vh;
+    display: flex; flex-direction: column;
+    padding: 36px max(28px, 6vw) 56px;
+  }
+  a { color: inherit; text-decoration: none; }
+  ::selection { background: var(--accent); color: var(--bg); }
+
+  /* nav */
+  nav {
+    display: flex; justify-content: space-between; align-items: center;
+    font-family: var(--mono); font-size: 12px; color: var(--ink-3);
+    letter-spacing: 0.06em;
+  }
+  nav .mark { color: var(--ink); font-weight: 500; letter-spacing: 0.04em; }
+  nav .links a { margin-left: 22px; transition: color .15s; }
+  nav .links a:hover { color: var(--ink); }
+
+  /* hero */
+  main {
+    flex: 1; display: flex; flex-direction: column; justify-content: center;
+    max-width: 880px; margin: 0 auto; width: 100%;
+    padding: 80px 0 60px;
+  }
+  .eyebrow {
+    font-family: var(--mono); font-size: 11px;
+    letter-spacing: 0.22em; text-transform: uppercase;
+    color: var(--accent); margin-bottom: 28px;
+  }
+  h1 {
+    font-family: var(--serif); font-weight: 400;
+    font-size: clamp(48px, 8vw, 96px);
+    line-height: 1.0; letter-spacing: -0.025em;
+    color: var(--ink); margin-bottom: 28px;
+  }
+  h1 em { font-style: italic; color: var(--accent); font-weight: 400; }
+  .lede {
+    font-family: var(--serif); font-size: clamp(20px, 2.2vw, 26px);
+    line-height: 1.4; color: var(--ink-2);
+    max-width: 640px; margin-bottom: 56px;
+  }
+
+  /* three beats */
+  .beats {
+    display: grid; grid-template-columns: repeat(3, 1fr);
+    gap: 44px; margin-bottom: 64px;
+  }
+  .beat .step {
+    font-family: var(--mono); font-size: 10.5px;
+    color: var(--ink-3); letter-spacing: 0.22em;
+    text-transform: uppercase; margin-bottom: 10px;
+  }
+  .beat .title {
+    font-family: var(--serif); font-size: 28px;
+    line-height: 1.1; letter-spacing: -0.01em;
+    margin-bottom: 8px;
+  }
+  .beat .copy { font-size: 14px; color: var(--ink-2); line-height: 1.55; }
+
+  /* cta */
+  .cta { display: flex; gap: 12px; align-items: center; flex-wrap: wrap; }
+  .cta .btn {
+    font-family: var(--mono); font-size: 13px;
+    padding: 13px 22px; border-radius: 8px;
+    letter-spacing: 0.04em; border: 1px solid var(--edge);
+    transition: background .15s, color .15s, border-color .15s, transform .15s;
+    display: inline-flex; align-items: center; gap: 8px;
+  }
+  .cta .btn.primary {
+    background: var(--ink); color: var(--bg); border-color: var(--ink);
+  }
+  .cta .btn.primary:hover { transform: translateY(-1px); }
+  .cta .btn.ghost { color: var(--ink-2); }
+  .cta .btn.ghost:hover { color: var(--ink); border-color: var(--ink); }
+  .cta .arrow { font-family: var(--serif); font-style: italic; font-size: 16px; }
+
+  /* footer */
+  footer {
+    font-family: var(--mono); font-size: 11px; color: var(--ink-3);
+    letter-spacing: 0.08em;
+    display: flex; justify-content: space-between; align-items: center;
+    padding-top: 28px; border-top: 1px solid var(--edge);
+  }
+  footer .pulse {
+    display: inline-block; width: 6px; height: 6px;
+    border-radius: 50%; background: var(--accent); margin-right: 8px;
+    animation: pulse 2.4s ease-in-out infinite;
+  }
+  @keyframes pulse {
+    0%, 100% { opacity: 0.4; transform: scale(0.9); }
+    50%      { opacity: 1;   transform: scale(1.1); }
+  }
+
+  @media (max-width: 760px) {
+    body { padding: 28px 22px 40px; }
+    main { padding: 48px 0 32px; }
+    .beats { grid-template-columns: 1fr; gap: 32px; margin-bottom: 48px; }
+    nav .links a { margin-left: 14px; }
+    footer { flex-direction: column; gap: 10px; align-items: flex-start; }
+  }
+</style>
+</head>
+<body>
+
+<nav>
+  <div class="mark">omo</div>
+  <div class="links">
+    <a href="/">hologram</a>
+    <a href="/squad">squad</a>
+    <a href="/squad?grid=1">grid</a>
+  </div>
+</nav>
+
+<main>
+  <div class="eyebrow">an agentic world for coding</div>
+  <h1>Speak. <em>Agents code.</em> You ship.</h1>
+  <p class="lede">
+    omo is a holographic voice that runs a swarm of coding agents for you.
+    Tell her what's broken. She dispatches, narrates, and waits for your word.
+  </p>
+
+  <div class="beats">
+    <div class="beat">
+      <div class="step">01 · Speak</div>
+      <div class="title">Voice in.</div>
+      <div class="copy">"Fix the checkout bug." omo picks a runtime and sends one to work.</div>
+    </div>
+    <div class="beat">
+      <div class="step">02 · Watch</div>
+      <div class="title">Agents at work.</div>
+      <div class="copy">Scouts peel off the hologram. Terminals stream. She narrates.</div>
+    </div>
+    <div class="beat">
+      <div class="step">03 · Ship</div>
+      <div class="title">Say the word.</div>
+      <div class="copy">"Ship it" applies the diff. "Scrap it" throws it away. No editor.</div>
+    </div>
+  </div>
+
+  <div class="cta">
+    <a class="btn primary" href="/">talk to omo <span class="arrow">→</span></a>
+    <a class="btn ghost" href="/squad">open the squad</a>
+  </div>
+</main>
+
+<footer>
+  <div><span class="pulse"></span>live · voice + claude code + hermes + browserbase</div>
+  <div>press M on the hologram to toggle voice</div>
+</footer>
+
+</body>
+</html>

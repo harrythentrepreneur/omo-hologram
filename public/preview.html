@@ -1,0 +1,68 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width,initial-scale=1" />
+    <title>omo · preview</title>
+    <script src="/client-log.js"></script>
+    <script type="module" src="/text-overlay.js"></script>
+    <script src="/voice-mode.js"></script>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;700&display=swap" />
+    <link rel="stylesheet" href="/preview.css" />
+  </head>
+  <body>
+    <div id="app">
+      <header>
+        <span class="brand">
+          <span class="glyph">◐</span>
+          <span class="name">omo</span>
+          <span class="sub">/ preview</span>
+        </span>
+        <button class="icon-btn nav-btn" id="nav-back" title="back (←)" aria-label="back" disabled>
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="15 18 9 12 15 6"/></svg>
+        </button>
+        <button class="icon-btn nav-btn" id="nav-forward" title="forward (→)" aria-label="forward" disabled>
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="9 6 15 12 9 18"/></svg>
+        </button>
+        <div class="addr" id="addr" data-state="loading">
+          <span class="dot"></span>
+          <input class="url" id="addr-url" placeholder="say a route, or type one (/squad, /hq, localhost:3000…)" autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false" />
+          <span class="meta" id="addr-meta"></span>
+          <span class="tier" id="tier" data-tier="unknown" title="">
+            <span class="tier-dot"></span>
+            <span class="tier-label">—</span>
+          </span>
+          <div class="suggest" id="addr-suggest" role="listbox"></div>
+        </div>
+        <button class="live-toggle" id="live-toggle" data-state="off" title="auto-reload when an agent saves a file (L)">
+          <span class="pip"></span>
+          <span>LIVE</span>
+        </button>
+        <button class="icon-btn" id="refresh" title="reload (R)" aria-label="reload">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M23 4v6h-6"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/></svg>
+        </button>
+        <a class="icon-btn" id="open-tab" target="_blank" rel="noreferrer noopener" title="open in new tab" aria-label="open in new tab">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/><path d="M15 3h6v6"/><path d="M10 14L21 3"/></svg>
+        </a>
+      </header>
+      <main>
+        <iframe
+          id="frame"
+          class="loading"
+          sandbox="allow-scripts allow-same-origin allow-forms allow-popups allow-modals allow-downloads"
+          allow="clipboard-write"
+          referrerpolicy="no-referrer"
+        ></iframe>
+        <div class="overlay" id="overlay">
+          <span class="glyph">◐</span>
+          <h2 id="ov-title">no url</h2>
+          <p id="ov-detail">say 'open /squad' or type a URL above.</p>
+          <p class="hint">Esc closes this pane · / focuses the address bar · L toggles live-reload</p>
+        </div>
+      </main>
+    </div>
+    <script type="module" src="/preview.js"></script>
+  </body>
+</html>

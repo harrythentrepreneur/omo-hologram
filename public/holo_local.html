@@ -1,0 +1,271 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>omo · local voice</title>
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<script type="module" src="/text-overlay.js"></script>
+<script src="/voice-mode.js"></script>
+<style>
+  :root {
+    --bg: #050810;
+    --phosphor: #c8e8ff;
+    --phosphor-dim: rgba(200, 232, 255, 0.55);
+    --amber: #f2c464;
+    --periwinkle: #9aa8ff;
+    --coral: #e87d7d;
+    --mono: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+    --sans: -apple-system, BlinkMacSystemFont, "SF Pro Display", system-ui, sans-serif;
+  }
+  * { box-sizing: border-box; }
+  html, body {
+    margin: 0;
+    height: 100%;
+    background: radial-gradient(ellipse at center top, #0a1426 0%, #050810 70%);
+    color: var(--phosphor);
+    font-family: var(--sans);
+    overflow: hidden;
+  }
+  body {
+    display: grid;
+    grid-template-rows: auto 1fr auto;
+    padding: 18px 24px;
+    gap: 14px;
+  }
+  header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 14px;
+  }
+  .brand {
+    font-family: var(--mono);
+    font-size: 12px;
+    letter-spacing: 0.3em;
+    text-transform: uppercase;
+    color: var(--phosphor-dim);
+  }
+  .brand .dot {
+    display: inline-block; width: 8px; height: 8px;
+    background: var(--periwinkle); border-radius: 50%; margin-right: 8px;
+    box-shadow: 0 0 12px var(--periwinkle);
+  }
+  .brand b { color: var(--periwinkle); font-weight: 600; }
+  .hud {
+    display: flex; gap: 14px; align-items: center;
+    font-family: var(--mono); font-size: 11px;
+  }
+  .hud .pill {
+    padding: 4px 8px;
+    border: 1px solid rgba(154, 168, 255, 0.25);
+    border-radius: 3px;
+    color: var(--phosphor-dim);
+  }
+  .hud .pill.ok { color: var(--periwinkle); border-color: var(--periwinkle); }
+  .hud .pill.warn { color: var(--amber); border-color: var(--amber); }
+  .hud .pill.err { color: var(--coral); border-color: var(--coral); }
+
+  main {
+    display: grid;
+    grid-template-columns: 1fr 380px;
+    gap: 18px;
+    min-height: 0;
+  }
+
+  /* Transcript pane */
+  .transcript {
+    background: rgba(154, 168, 255, 0.04);
+    border: 1px solid rgba(154, 168, 255, 0.12);
+    border-radius: 8px;
+    padding: 18px;
+    overflow-y: auto;
+    font-size: 14px;
+    line-height: 1.55;
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+  }
+  .turn {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    max-width: 85%;
+  }
+  .turn .who {
+    font-family: var(--mono);
+    font-size: 9.5px;
+    letter-spacing: 0.18em;
+    text-transform: uppercase;
+    color: var(--phosphor-dim);
+  }
+  .turn .body {
+    background: rgba(0, 0, 0, 0.28);
+    border-radius: 6px;
+    padding: 8px 12px;
+    border-left: 2px solid;
+    white-space: pre-wrap;
+  }
+  .turn.user { align-self: flex-end; align-items: flex-end; }
+  .turn.user .body { border-color: var(--amber); }
+  .turn.assistant .body { border-color: var(--periwinkle); }
+  .turn.tool .body {
+    border-color: var(--phosphor-dim);
+    color: var(--phosphor-dim);
+    font-family: var(--mono);
+    font-size: 12px;
+  }
+  .turn.error .body { border-color: var(--coral); color: var(--coral); }
+
+  /* Side rail: tools + status */
+  .rail {
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+    min-height: 0;
+  }
+  .rail .panel {
+    background: rgba(154, 168, 255, 0.04);
+    border: 1px solid rgba(154, 168, 255, 0.12);
+    border-radius: 8px;
+    padding: 14px;
+  }
+  .rail .panel h3 {
+    margin: 0 0 8px;
+    font-family: var(--mono);
+    font-size: 10px;
+    letter-spacing: 0.25em;
+    text-transform: uppercase;
+    color: var(--phosphor-dim);
+    font-weight: 500;
+  }
+  .tool-call {
+    font-family: var(--mono);
+    font-size: 11.5px;
+    color: var(--periwinkle);
+    padding: 4px 0;
+    border-bottom: 1px dashed rgba(154, 168, 255, 0.10);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+  .tool-call:last-child { border-bottom: none; }
+  .tool-call .args {
+    color: var(--phosphor-dim);
+    font-size: 10.5px;
+  }
+  .tools-list { max-height: 280px; overflow-y: auto; }
+
+  footer {
+    display: flex;
+    gap: 14px;
+    align-items: center;
+    padding: 8px 0 0;
+  }
+
+  .mic-btn {
+    width: 64px; height: 64px;
+    border-radius: 50%;
+    border: 2px solid var(--periwinkle);
+    background: radial-gradient(circle, rgba(154,168,255,0.18), rgba(154,168,255,0.02));
+    color: var(--periwinkle);
+    font-size: 26px;
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    transition: all 0.15s ease;
+  }
+  .mic-btn:hover { background: radial-gradient(circle, rgba(154,168,255,0.28), rgba(154,168,255,0.04)); }
+  .mic-btn.listening {
+    border-color: var(--coral);
+    color: var(--coral);
+    animation: pulse 1.2s infinite;
+  }
+  .mic-btn:disabled { opacity: 0.35; cursor: not-allowed; }
+  @keyframes pulse {
+    0%, 100% { box-shadow: 0 0 0 0 rgba(232, 125, 125, 0.5); }
+    50% { box-shadow: 0 0 0 14px rgba(232, 125, 125, 0); }
+  }
+
+  .text-input {
+    flex: 1;
+    background: rgba(0, 0, 0, 0.4);
+    border: 1px solid rgba(154, 168, 255, 0.2);
+    border-radius: 6px;
+    padding: 12px 16px;
+    color: var(--phosphor);
+    font-family: var(--sans);
+    font-size: 14px;
+    outline: none;
+  }
+  .text-input:focus { border-color: var(--periwinkle); }
+
+  .send-btn {
+    background: var(--periwinkle);
+    color: #0a1426;
+    border: none;
+    border-radius: 6px;
+    padding: 12px 18px;
+    font-family: var(--mono);
+    font-size: 11px;
+    letter-spacing: 0.2em;
+    text-transform: uppercase;
+    cursor: pointer;
+    font-weight: 600;
+  }
+  .send-btn:disabled { opacity: 0.4; cursor: not-allowed; }
+
+  .empty {
+    color: var(--phosphor-dim);
+    font-style: italic;
+    text-align: center;
+    padding: 40px 20px;
+  }
+
+  .status-line {
+    font-family: var(--mono);
+    font-size: 11px;
+    color: var(--phosphor-dim);
+    padding: 0 4px;
+  }
+</style>
+</head>
+<body>
+
+<header>
+  <div class="brand"><span class="dot"></span><b>omo</b> · local voice</div>
+  <div class="hud">
+    <span id="ollama-pill" class="pill">checking…</span>
+    <span id="model-pill" class="pill">model: —</span>
+    <span id="iter-pill" class="pill">iter: 0</span>
+  </div>
+</header>
+
+<main>
+  <section class="transcript" id="transcript">
+    <div class="empty">Tap the mic, or type a message. Everything runs locally — Ollama for the brain, your browser for speech.</div>
+  </section>
+
+  <aside class="rail">
+    <div class="panel">
+      <h3>Tool calls (this session)</h3>
+      <div id="tool-list" class="tools-list">
+        <div class="empty" style="padding:14px;">No tools called yet.</div>
+      </div>
+    </div>
+    <div class="panel">
+      <h3>Status</h3>
+      <div class="status-line" id="status-line">idle</div>
+    </div>
+  </aside>
+</main>
+
+<footer>
+  <button id="mic" class="mic-btn" title="Hold to speak">🎙</button>
+  <input id="text-input" class="text-input" placeholder="Or type a message…" autocomplete="off">
+  <button id="send" class="send-btn">Send</button>
+</footer>
+
+<script src="/local-voice.js"></script>
+</body>
+</html>

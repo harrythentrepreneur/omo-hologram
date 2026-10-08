@@ -1,0 +1,28 @@
+node_modules/
+.env
+.env.bak
+.DS_Store
+**/.DS_Store
+
+# Empty scratch dir, recreated on demand.
+tmp/
+
+# Abandoned Next.js stub.
+dashboard/
+
+# Claude Code local state (session lock, user-specific settings)
+.claude/
+*.local.json
+data/logs/
+
+# Hotspot-proxy state (tinyproxy config, generated BasicAuth creds,
+# cloudflared logs). Created by bin/proxy-up.sh.
+.proxy/
+
+# Playwright MCP browser session logs/snapshots (dev artifacts).
+.playwright-mcp/
+
+# Dev screenshots — keep the canonical README assets in docs/img/.
+/*.png
+screenshots/
+

@@ -1,0 +1,39 @@
+{
+  "name": "omo-hologram",
+  "version": "0.1.0",
+  
+  "type": "module",
+  "description": "A voice-first holographic AI operator for your business, built on Gemini Live",
+  "scripts": {
+    "kill-port": "node scripts/kill-port.js",
+    "prestart": "npm run kill-port",
+    "predev": "npm run kill-port",
+    "start": "node server.js",
+    "dev": "NO_OPEN=1 node --watch server.js",
+    "text": "OMO_OPEN_PATH=/?text=1 node --watch server.js",
+    "lint": "eslint 'src/**/*.js' 'public/**/*.js' 'server.js' --no-error-on-unmatched-pattern",
+    "proxy:up": "bash bin/proxy-up.sh",
+    "start:hotspot": "bash bin/start-with-proxy.sh",
+    "dev:hotspot": "NODE_CMD='node --watch server.js' NO_OPEN=1 bash bin/start-with-proxy.sh"
+  },
+  "devDependencies": {
+    "eslint": "^9.18.0"
+  },
+  "dependencies": {
+    "@browserbasehq/sdk": "^2.10.0",
+    "@browserbasehq/stagehand": "^3.2.1",
+    "@google/genai": "^1.50.1",
+    "@neondatabase/serverless": "^1.1.0",
+    "dotenv": "^16.4.5",
+    "express": "^4.19.2",
+    "googleapis": "^171.4.0",
+    "node-pty": "^1.1.0",
+    "playwright-core": "^1.59.1",
+    "stripe": "^22.0.2",
+    "ws": "^8.18.0",
+    "zod": "^4.3.6"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}

@@ -1,0 +1,735 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>omo // Holoscope</title>
+<script src="/client-log.js"></script>
+<script type="module" src="/text-overlay.js"></script>
+<script src="/voice-mode.js"></script>
+<style>
+  :root {
+    --cyan: #00e5ff;
+    --cyan-dim: rgba(0, 229, 255, 0.4);
+    --pink: #ff66b3;
+  }
+  * { box-sizing: border-box; }
+  html, body {
+    margin: 0; padding: 0; height: 100%;
+    background: #000; color: var(--cyan);
+    font-family: "SF Mono", "Fira Code", "JetBrains Mono", monospace;
+    overflow: hidden;
+    user-select: none;
+    -webkit-user-select: none;
+  }
+  #scene { position: fixed; inset: 0; display: block; }
+  .scanlines {
+    position: fixed; inset: 0; pointer-events: none; z-index: 5;
+    background: repeating-linear-gradient(
+      0deg,
+      rgba(0, 229, 255, 0.04) 0px,
+      rgba(0, 229, 255, 0.04) 1px,
+      transparent 1px,
+      transparent 3px
+    );
+    mix-blend-mode: screen;
+  }
+  .vignette {
+    position: fixed; inset: 0; pointer-events: none; z-index: 6;
+    background: radial-gradient(ellipse at center, transparent 60%, rgba(0,0,0,0.55) 100%);
+  }
+
+  header {
+    position: fixed; top: 0; left: 0; right: 0; padding: 16px 24px;
+    display: flex; justify-content: space-between; align-items: center;
+    z-index: 10; pointer-events: none;
+  }
+  header .brand {
+    letter-spacing: 4px; font-size: 13px; font-weight: 600;
+    text-shadow: 0 0 10px var(--cyan);
+  }
+  header .right { font-size: 11px; opacity: 0.9; letter-spacing: 2px; display: flex; gap: 16px; align-items: center; }
+  header .right .pointer-all { pointer-events: auto; }
+  #status.connected .dot { background: #6aff9a; box-shadow: 0 0 10px #6aff9a; }
+  #status.error .dot { background: #ff5a7a; box-shadow: 0 0 10px #ff5a7a; }
+  #voice {
+    background: rgba(0,20,30,0.6); color: var(--cyan); border: 1px solid var(--cyan-dim);
+    font: inherit; font-size: 10px; letter-spacing: 1px; padding: 4px 6px; border-radius: 6px;
+    cursor: pointer;
+  }
+  .dot {
+    width: 8px; height: 8px; border-radius: 50%;
+    background: var(--cyan); box-shadow: 0 0 10px var(--cyan);
+    animation: pulse 1.5s ease-in-out infinite; display: inline-block; margin-right: 6px;
+  }
+  @keyframes pulse {
+    0%,100% { opacity: 1; transform: scale(1); }
+    50% { opacity: 0.35; transform: scale(0.75); }
+  }
+
+  #transcript {
+    position: fixed;
+    left: 50%; transform: translateX(-50%);
+    bottom: 150px;
+    max-width: 720px; width: calc(100% - 40px);
+    z-index: 10; text-align: center;
+    pointer-events: none;
+    padding: 14px 22px 16px;
+    background: linear-gradient(180deg, rgba(0,20,30,0.55), rgba(0,10,20,0.75));
+    border: 1px solid rgba(0, 229, 255, 0.35);
+    border-radius: 14px;
+    backdrop-filter: blur(8px);
+    -webkit-backdrop-filter: blur(8px);
+    box-shadow: 0 0 32px rgba(0, 229, 255, 0.18), inset 0 0 20px rgba(0, 229, 255, 0.08);
+  }
+  #heard {
+    font-size: 14px; letter-spacing: 1px; opacity: 0.85;
+    min-height: 20px; margin-bottom: 10px;
+    color: #7fe9ff;
+  }
+  #heard:empty { display: none; }
+  #reply {
+    font-size: 26px; letter-spacing: 0.3px; font-weight: 500;
+    color: #ffffff; text-shadow: 0 0 18px rgba(0, 229, 255, 0.6);
+    min-height: 34px; line-height: 1.3;
+    font-family: ui-rounded, -apple-system, system-ui, sans-serif;
+  }
+
+  #controls {
+    position: fixed; bottom: 32px; left: 50%; transform: translateX(-50%);
+    display: flex; flex-direction: column; align-items: center; gap: 14px;
+    z-index: 10;
+  }
+  #mic {
+    width: 84px; height: 84px; border-radius: 50%;
+    border: 2px solid var(--cyan);
+    background: radial-gradient(circle at center, rgba(0,229,255,0.35), rgba(0,20,30,0.6));
+    color: var(--cyan); cursor: pointer;
+    display: flex; align-items: center; justify-content: center;
+    box-shadow: 0 0 30px rgba(0,229,255,0.45), inset 0 0 24px rgba(0,229,255,0.3);
+    transition: transform 0.15s ease, box-shadow 0.15s ease;
+    -webkit-tap-highlight-color: transparent;
+  }
+  #mic:hover { transform: scale(1.04); }
+  #mic:active { transform: scale(0.96); }
+  #mic.listening {
+    background: radial-gradient(circle at center, rgba(255,102,179,0.45), rgba(40,0,20,0.7));
+    border-color: var(--pink);
+    color: var(--pink);
+    box-shadow: 0 0 44px rgba(255,102,179,0.7), inset 0 0 30px rgba(255,102,179,0.4);
+    animation: listenPulse 1.2s ease-in-out infinite;
+  }
+  @keyframes listenPulse {
+    0%,100% { box-shadow: 0 0 44px rgba(255,102,179,0.7), inset 0 0 30px rgba(255,102,179,0.4); }
+    50%    { box-shadow: 0 0 64px rgba(255,102,179,1), inset 0 0 40px rgba(255,102,179,0.6); }
+  }
+  #mic svg { width: 32px; height: 32px; }
+  #hint { font-size: 10px; letter-spacing: 2px; opacity: 0.65; }
+
+  #xr {
+    position: fixed; top: 16px; right: 24px; z-index: 10;
+    background: transparent; color: var(--cyan);
+    border: 1px solid var(--cyan-dim); padding: 6px 12px;
+    font: inherit; font-size: 10px; letter-spacing: 2px;
+    cursor: pointer; display: none;
+  }
+  #xr:hover { background: rgba(0,229,255,0.12); }
+
+  @media (max-width: 500px) {
+    #transcript { bottom: 135px; padding: 12px 16px 14px; }
+    #reply { font-size: 20px; }
+    #heard { font-size: 12px; }
+    header .right .hide-m { display: none; }
+  }
+</style>
+
+<script type="importmap">
+{
+  "imports": {
+    "three": "https://unpkg.com/three@0.160.0/build/three.module.js",
+    "three/addons/": "https://unpkg.com/three@0.160.0/examples/jsm/"
+  }
+}
+</script>
+</head>
+<body>
+
+<canvas id="scene"></canvas>
+<div class="scanlines"></div>
+<div class="vignette"></div>
+
+<header>
+  <div class="brand">◈ OMO // HOLOSCOPE</div>
+  <div class="right">
+    <span id="status" class="pointer-all"><span class="dot"></span>IDLE</span>
+    <span class="hide-m">NODE HX-01</span>
+  </div>
+</header>
+
+<button id="xr">⬢ ENTER HOLOGRAM</button>
+
+<div id="transcript">
+  <div id="heard"></div>
+  <div id="reply">你好呀~我是 omo。点一下麦克风跟我打招呼吧！</div>
+</div>
+
+<div id="controls">
+  <button id="mic" title="Tap to talk">
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+      <path d="M12 2a3 3 0 0 0-3 3v6a3 3 0 0 0 6 0V5a3 3 0 0 0-3-3z"/>
+      <path d="M19 10v1a7 7 0 0 1-14 0v-1"/>
+      <line x1="12" y1="18" x2="12" y2="22"/>
+    </svg>
+  </button>
+  <div id="hint">TAP TO TALK · SPACE TO HOLD</div>
+</div>
+
+<script type="module">
+  import * as THREE from 'three';
+  import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+  import { EffectComposer } from 'three/addons/postprocessing/EffectComposer.js';
+  import { RenderPass } from 'three/addons/postprocessing/RenderPass.js';
+  import { UnrealBloomPass } from 'three/addons/postprocessing/UnrealBloomPass.js';
+  import { ShaderPass } from 'three/addons/postprocessing/ShaderPass.js';
+  import { CSS3DRenderer, CSS3DObject } from 'three/addons/renderers/CSS3DRenderer.js';
+  import { createAvatar, updateAvatar, createHologramScene } from './avatar.js';
+  import { installChartLayer } from './chart-layer.js';
+  import { installPaneLayer } from './pane-layer.js';
+
+  // Optional Looking Glass support: enable WebXR on a Looking Glass display
+  // via the Looking Glass Bridge app. Loads only if available.
+  let lkgReady = false;
+  try {
+    const mod = await import('https://esm.sh/@lookingglass/webxr@0.5.0');
+    new mod.LookingGlassWebXRPolyfill({ tileHeight: 512, numViews: 45, targetY: 0, targetZ: 0, targetDiam: 3, fovy: (14 * Math.PI) / 180 });
+    lkgReady = true;
+  } catch (e) { /* LKG polyfill optional */ }
+
+  const canvas = document.getElementById('scene');
+  const renderer = new THREE.WebGLRenderer({ canvas, antialias: true, alpha: false, powerPreference: 'high-performance' });
+  renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+  renderer.setSize(window.innerWidth, window.innerHeight);
+  renderer.toneMapping = THREE.ACESFilmicToneMapping;
+  renderer.toneMappingExposure = 1.15;
+  renderer.xr.enabled = true;
+
+  const sceneCtl = createHologramScene();
+  const { scene, update: updateScene } = sceneCtl;
+  const avatar = createAvatar();
+  scene.add(avatar);
+
+  const camera = new THREE.PerspectiveCamera(42, window.innerWidth / window.innerHeight, 0.1, 100);
+  camera.position.set(0, 0.35, 4.2);
+
+  const controls = new OrbitControls(camera, canvas);
+  controls.enableDamping = true;
+  controls.dampingFactor = 0.08;
+  controls.minDistance = 2.8;
+  controls.maxDistance = 8;
+  controls.minPolarAngle = Math.PI * 0.22;
+  controls.maxPolarAngle = Math.PI * 0.6;
+  controls.target.set(0, 0.15, 0);
+  controls.autoRotate = true;
+  controls.autoRotateSpeed = 0.3;
+
+  // Post-processing: bloom + RGB split/scanline shader
+  const composer = new EffectComposer(renderer);
+  composer.addPass(new RenderPass(scene, camera));
+  const bloom = new UnrealBloomPass(new THREE.Vector2(window.innerWidth, window.innerHeight), 0.7, 0.8, 0.4);
+  composer.addPass(bloom);
+
+  const holoPass = new ShaderPass({
+    uniforms: {
+      tDiffuse: { value: null },
+      uTime: { value: 0 },
+      uAmount: { value: 0.0012 },
+      uScanline: { value: 0.025 },
+      uResolution: { value: new THREE.Vector2(window.innerWidth, window.innerHeight) },
+    },
+    vertexShader: `varying vec2 vUv; void main() { vUv = uv; gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0); }`,
+    fragmentShader: `
+      uniform sampler2D tDiffuse;
+      uniform float uTime;
+      uniform float uAmount;
+      uniform float uScanline;
+      uniform vec2 uResolution;
+      varying vec2 vUv;
+      void main() {
+        // chromatic aberration
+        float r = texture2D(tDiffuse, vUv + vec2(uAmount, 0.0)).r;
+        float g = texture2D(tDiffuse, vUv).g;
+        float b = texture2D(tDiffuse, vUv - vec2(uAmount, 0.0)).b;
+        vec3 col = vec3(r, g, b);
+        // scanlines
+        float s = sin(vUv.y * uResolution.y * 1.2 + uTime * 2.0) * 0.5 + 0.5;
+        col *= (1.0 - uScanline * s);
+        // subtle flicker
+        col *= 0.97 + 0.03 * sin(uTime * 18.0);
+        gl_FragColor = vec4(col, 1.0);
+      }`,
+  });
+  composer.addPass(holoPass);
+
+  function onResize() {
+    const w = window.innerWidth, h = window.innerHeight;
+    camera.aspect = w / h;
+    camera.updateProjectionMatrix();
+    renderer.setSize(w, h);
+    composer.setSize(w, h);
+    holoPass.uniforms.uResolution.value.set(w, h);
+  }
+  window.addEventListener('resize', onResize);
+
+  // 3D Projectable stage — mounted after onResize so the world's own
+  // resize listener fires AFTER this page's (which updates the canvas
+  // size the CSS3DRenderer reads). Chart / status / agent / media all
+  // mount as CSS3DObjects parented to the avatar group, inheriting her
+  // sway, breath, and auto-rotate. Without this context, chart-layer
+  // falls back to a detached DOM card outside the hologram world.
+  installChartLayer({
+    avatarObj: avatar,
+    stageEl: document.body,
+    scene,
+    camera,
+    renderer,
+    webglCanvas: canvas,
+    CSS3DObject,
+    CSS3DRenderer,
+    sceneCtl: { pulsePedestal: () => sceneCtl.pulsePedestal && sceneCtl.pulsePedestal() },
+  });
+
+  // Pane layer — shrinks the WebGL canvas into a corner when show_pane fires.
+  installPaneLayer({ stageEl: canvas });
+
+  // Looking Glass button
+  if (lkgReady) {
+    navigator.xr?.isSessionSupported('immersive-vr').then((ok) => {
+      if (!ok) return;
+      const btn = document.getElementById('xr');
+      btn.style.display = 'block';
+      btn.addEventListener('click', async () => {
+        const session = await navigator.xr.requestSession('immersive-vr', { optionalFeatures: ['local-floor'] });
+        renderer.xr.setSession(session);
+      });
+    });
+  }
+
+  // ─── Speech: Google Gemini Live over WebSocket ────────────────────────
+  // mic    → AudioWorklet(PCM16 @ 16 kHz) → base64 → session.sendRealtimeInput
+  // model  → serverContent.modelTurn.parts[].inlineData (PCM16 @ 24 kHz)
+  //        → AudioBuffer → analyser → speakers + mouth drive
+  const heardEl = document.getElementById('heard');
+  const replyEl = document.getElementById('reply');
+  const micBtn = document.getElementById('mic');
+  const statusEl = document.getElementById('status');
+
+  function setStatus(text, state) {
+    statusEl.innerHTML = `<span class="dot"></span>${text}`;
+    statusEl.classList.remove('connected', 'error');
+    if (state) statusEl.classList.add(state);
+  }
+
+  let liveSession = null;
+  let micCtx = null, micStream = null, micNode = null;
+  let playCtx = null, analyser = null, analyserData = null;
+  let playHead = 0;
+  let playingSources = [];
+  let connecting = false, connected = false;
+  let sessionInfo = null;
+
+  function setListening(on) {
+    avatar.userData.listening = on;
+    micBtn.classList.toggle('listening', on);
+  }
+
+  async function connect() {
+    if (connecting || connected) return;
+    connecting = true;
+    setStatus('CONNECTING');
+    replyEl.textContent = 'connecting~';
+
+    try {
+      const r = await fetch('/session', { method: 'POST' });
+      const text = await r.text();
+      if (!r.ok) {
+        console.error('[gemini] /session failed', r.status, text);
+        setStatus('SERVER ERR', 'error');
+        replyEl.textContent = `server error (${r.status}) — check the terminal running npm start`;
+        connecting = false;
+        return;
+      }
+      sessionInfo = JSON.parse(text);
+    } catch (err) {
+      console.error('[gemini] /session fetch failed', err);
+      setStatus('NO SERVER', 'error');
+      replyEl.textContent = "couldn't reach the server~ is it running?";
+      connecting = false;
+      return;
+    }
+    if (!sessionInfo?.token) {
+      setStatus('NO TOKEN', 'error');
+      replyEl.textContent = 'no token in session response — see console';
+      connecting = false;
+      return;
+    }
+
+    let GoogleGenAI;
+    try {
+      ({ GoogleGenAI } = await import('https://esm.sh/@google/genai@1.50.1'));
+    } catch (err) {
+      console.error('[gemini] sdk import failed', err);
+      setStatus('SDK ERR', 'error');
+      replyEl.textContent = "couldn't load the gemini sdk — see console";
+      connecting = false;
+      return;
+    }
+
+    try {
+      await setupAudio();
+    } catch (err) {
+      console.error('[gemini] audio setup failed', err);
+      setStatus('NO MIC', 'error');
+      replyEl.textContent = 'i need mic permission to hear you~';
+      teardown();
+      connecting = false;
+      return;
+    }
+
+    const ai = new GoogleGenAI({ apiKey: sessionInfo.token, httpOptions: { apiVersion: 'v1alpha' } });
+    try {
+      liveSession = await ai.live.connect({
+        model: sessionInfo.model,
+        config: sessionInfo.setupConfig,
+        callbacks: {
+          onopen: () => console.log('[gemini] ws open'),
+          onmessage: (msg) => handleLiveMessage(msg),
+          onerror: (e) => {
+            console.error('[gemini] ws error', e);
+            setStatus('WS ERR', 'error');
+          },
+          onclose: (e) => {
+            const reason = e?.reason || ('code ' + (e?.code ?? '?'));
+            const isError = e?.code && e.code !== 1000;
+            console.log('[gemini] ws close', e?.code, e?.reason);
+            if (connected || connecting) {
+              if (isError) {
+                setStatus('WS CLOSED', 'error');
+                replyEl.textContent = 'ws closed: ' + reason;
+              }
+              teardown();
+            }
+          },
+        },
+      });
+    } catch (err) {
+      console.error('[gemini] ws connect failed', err);
+      setStatus('WS FAIL', 'error');
+      replyEl.textContent = `couldn't open websocket — ${err.message}`;
+      teardown();
+      connecting = false;
+      return;
+    }
+
+    connecting = false;
+    connected = true;
+    setListening(true);
+    setStatus('GEMINI LIVE', 'connected');
+    replyEl.textContent = 'hi~ im listening';
+  }
+
+  function teardown() {
+    setListening(false);
+    connected = false;
+    connecting = false;
+    avatar.userData.speaking = false;
+    avatar.userData.mouthDrive = null;
+    stopAllPlayback();
+    // Detach worklet handler before closing the context so stale chunks
+    // can't fire into a torn-down session.
+    if (micNode) { try { micNode.port.onmessage = null; micNode.disconnect(); } catch {} micNode = null; }
+    if (liveSession) { try { liveSession.close(); } catch {} liveSession = null; }
+    if (micStream) { micStream.getTracks().forEach((t) => t.stop()); micStream = null; }
+    if (micCtx) { try { micCtx.close(); } catch {} micCtx = null; }
+    if (playCtx) { try { playCtx.close(); } catch {} playCtx = null; }
+    analyser = null; analyserData = null; playHead = 0;
+    setStatus('IDLE');
+  }
+
+  // ─── Audio setup: separate contexts for mic (16 kHz) and playback (24 kHz) ─
+  async function setupAudio() {
+    micStream = await navigator.mediaDevices.getUserMedia({ audio: true });
+    micCtx = new AudioContext({ sampleRate: 16000 });
+    await micCtx.audioWorklet.addModule('/pcm-worklet.js');
+    const src = micCtx.createMediaStreamSource(micStream);
+    micNode = new AudioWorkletNode(micCtx, 'pcm16-worklet');
+    micNode.port.onmessage = (e) => {
+      // Only forward while we have a live session that's still connected —
+      // prevents spamming send() after teardown.
+      if (!liveSession || !connected) return;
+      try {
+        // Gemini 3.1 Flash Live: `audio` (not the deprecated `media_chunks`).
+        liveSession.sendRealtimeInput({
+          audio: { data: arrayBufferToBase64(e.data), mimeType: 'audio/pcm;rate=16000' },
+        });
+      } catch (err) { console.warn('[gemini] send failed', err); }
+    };
+    src.connect(micNode);
+
+    playCtx = new AudioContext({ sampleRate: 24000 });
+    playHead = playCtx.currentTime;
+    analyser = playCtx.createAnalyser();
+    analyser.fftSize = 512;
+    analyser.smoothingTimeConstant = 0.6;
+    analyser.connect(playCtx.destination);
+    analyserData = new Uint8Array(analyser.frequencyBinCount);
+  }
+
+  function sampleMouth() {
+    if (!analyser || !analyserData) return null;
+    analyser.getByteFrequencyData(analyserData);
+    let sum = 0, n = 0;
+    for (let i = 2; i < Math.min(48, analyserData.length); i++) { sum += analyserData[i]; n++; }
+    const avg = sum / (n * 255);
+    return Math.min(1, Math.pow(avg * 1.6, 0.9));
+  }
+
+  function enqueuePcmChunk(int16, sampleRate) {
+    if (!playCtx || !analyser) return;
+    const buf = playCtx.createBuffer(1, int16.length, sampleRate);
+    const ch = buf.getChannelData(0);
+    for (let i = 0; i < int16.length; i++) ch[i] = int16[i] / 0x8000;
+    const src = playCtx.createBufferSource();
+    src.buffer = buf;
+    src.connect(analyser);
+    const startAt = Math.max(playHead, playCtx.currentTime + 0.02);
+    src.start(startAt);
+    playHead = startAt + buf.duration;
+    playingSources.push(src);
+    src.onended = () => { playingSources = playingSources.filter((s) => s !== src); };
+  }
+
+  function stopAllPlayback() {
+    playingSources.forEach((s) => { try { s.stop(); } catch {} });
+    playingSources = [];
+    if (playCtx) playHead = playCtx.currentTime;
+  }
+
+  // Momo ingest — pushes finalized transcripts onto the Data Core ring
+  // so /hq's LOG and /agents-grid's ticker both see voice activity live.
+  let momoIngest = null;
+  async function ensureMomoIngest() {
+    if (momoIngest) return momoIngest;
+    try {
+      const mod = await import('./momo-ingest.js');
+      momoIngest = mod.attachMomoIngest({
+        page: 'avatar',
+        getSession: () => ({ model: sessionInfo?.model, voice: sessionInfo?.voice }),
+      });
+    } catch (err) { console.warn('momo-ingest import failed', err); }
+    return momoIngest;
+  }
+
+  let momoReactions = null;
+  async function ensureMomoReactions() {
+    if (momoReactions) return momoReactions;
+    try {
+      const mod = await import('./momo-reactions.js');
+      momoReactions = mod.attachMomoReactions({ avatar });
+    } catch (err) { console.warn('momo-reactions import failed', err); }
+    return momoReactions;
+  }
+
+  // ─── Gemini Live server messages ─────────────────────────────────────
+  function handleLiveMessage(msg) {
+    if (msg.setupComplete) return;
+    ensureMomoIngest().then((ing) => ing && ing.onLiveMessage(msg));
+    ensureMomoReactions().then((r) => r && r.onLiveMessage(msg));
+    const sc = msg.serverContent;
+    if (sc) {
+      if (sc.modelTurn?.parts) {
+        for (const part of sc.modelTurn.parts) {
+          const inline = part.inlineData;
+          if (inline && typeof inline.data === 'string' && /audio\/pcm/i.test(inline.mimeType || '')) {
+            const rate = extractRate(inline.mimeType) || 24000;
+            const int16 = base64ToInt16(inline.data);
+            avatar.userData.speaking = true;
+            enqueuePcmChunk(int16, rate);
+          }
+        }
+      }
+      if (sc.inputTranscription?.text) heardEl.textContent = sc.inputTranscription.text.trim();
+      if (sc.outputTranscription?.text) replyEl.textContent = sc.outputTranscription.text;
+      if (sc.interrupted) {
+        stopAllPlayback();
+        avatar.userData.speaking = false;
+      }
+      if (sc.generationComplete || sc.turnComplete) {
+        const drain = Math.max(0, (playHead - (playCtx?.currentTime || 0)) * 1000);
+        setTimeout(() => {
+          if (playingSources.length === 0) avatar.userData.speaking = false;
+        }, drain + 60);
+      }
+    }
+
+    if (msg.toolCall?.functionCalls) {
+      for (const call of msg.toolCall.functionCalls) handleFunctionCall(call);
+    }
+  }
+
+  async function handleFunctionCall(call) {
+    const { id, name, args } = call;
+    console.log('[gemini] tool call', name, args);
+    let output;
+    try {
+      const r = await fetch('/tool', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name, arguments: args || {} }),
+      });
+      output = await r.json();
+    } catch (err) { output = { error: String(err) }; }
+    const result = output.result ?? output;
+
+    if (name === 'render_viz' && result && result.viz_id && window.__holoChart) {
+      try {
+        window.__holoChart.mount(
+          result.viz_id,
+          result.size || 'wide',
+          { width: result.width, height: result.height, cached: !!result.cached },
+        );
+      } catch (err) { console.warn('[viz] mount err', err); }
+    } else if (name === 'highlight_viz' && result && result.ok && window.__holoChart) {
+      try {
+        window.__holoChart.highlight({
+          vizId: result.viz_id,
+          dataIndex: result.data_index,
+          seriesIndex: result.series_index,
+          label: result.label,
+        });
+      } catch (err) { console.warn('[viz] highlight err', err); }
+    } else if (name === 'dismiss_viz' && result && result.ok && window.__holoChart) {
+      try { window.__holoChart.dismount(result.viz_id || undefined); }
+      catch (err) { console.warn('[viz] dismiss err', err); }
+    } else if (name === 'show_pane' && result && result.ok && window.__holoPane) {
+      try {
+        window.__holoPane.mount({
+          url: result.url,
+          title: result.title,
+          page: result.page,
+          projectable_id: result.projectable_id,
+          slot: result.slot,
+          view: result.view,
+          filter: result.filter,
+        });
+      } catch (err) { console.warn('[pane] mount err', err); }
+    } else if (name === 'meta_dashboard_command' && result && result.ok && result.command && window.__holoPane) {
+      try { window.__holoPane.forwardMessage({ type: 'omo.metaCommand', command: result.command }); }
+      catch (err) { console.warn('[pane] meta command forward err', err); }
+    } else if (name === 'dismiss_pane' && result && result.ok && window.__holoPane) {
+      try { window.__holoPane.dismount(); }
+      catch (err) { console.warn('[pane] dismiss err', err); }
+    }
+
+    if (!liveSession) return;
+    try {
+      liveSession.sendToolResponse({
+        functionResponses: [{ id, name, response: { result } }],
+      });
+    } catch (err) { console.warn('[gemini] sendToolResponse failed', err); }
+  }
+
+  // ─── Helpers ─────────────────────────────────────────────────────────
+  function base64ToInt16(b64) {
+    const bin = atob(b64);
+    const bytes = new Uint8Array(bin.length);
+    for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+    return new Int16Array(bytes.buffer, bytes.byteOffset, Math.floor(bin.length / 2));
+  }
+  function arrayBufferToBase64(buf) {
+    const bytes = new Uint8Array(buf);
+    let s = '';
+    for (let i = 0; i < bytes.length; i++) s += String.fromCharCode(bytes[i]);
+    return btoa(s);
+  }
+  function extractRate(mimeType) {
+    const m = /rate=(\d+)/i.exec(mimeType || '');
+    return m ? parseInt(m[1], 10) : null;
+  }
+
+  // ─── UI wiring ────────────────────────────────────────────────────────
+  // Debounce rapid clicks so a connect-in-progress doesn't stack with a
+  // disconnect, leaving the WS in CLOSING with a hot mic still firing.
+  let toggleLock = false;
+  micBtn.addEventListener('click', async () => {
+    if (toggleLock) return;
+    // 'off' mode: explicit user intent to not spend. The mic button still
+    // exists for accessibility but does nothing — hint at the cycle.
+    if (window.omoVoiceMode && window.omoVoiceMode.current === 'off') {
+      setStatus('OFF · press M to cycle');
+      return;
+    }
+    toggleLock = true;
+    try {
+      if (connected || connecting) teardown();
+      else await connect();
+    } finally {
+      setTimeout(() => { toggleLock = false; }, 250);
+    }
+  });
+
+  // ─── Shared voice-mode bridge ─────────────────────────────────────────
+  // /voice-mode.js owns the 3-mode toggle (PTT / OFF / ON), HUD chip, M
+  // cycle, and PTT spacebar. It fires these events; we just connect /
+  // teardown in response.
+  try { window.omoVoiceMode?.enablePtt(true); } catch {}
+  window.addEventListener('omo:voice-want-on', async () => {
+    if (connected || connecting) return;
+    try { await connect(); } catch (err) { console.warn('[voice/on] connect failed', err); }
+  });
+  window.addEventListener('omo:voice-want-off', () => {
+    if (connected || connecting) {
+      try { teardown(); } catch (err) { console.warn('[voice/off] teardown', err); }
+    }
+  });
+
+  setStatus('IDLE');
+
+  // Text-chat input — type to Momo without using the mic.
+  const { installTextChat } = await import('./text-chat.js');
+  installTextChat({
+    getSession: () => liveSession,
+    isConnected: () => connected,
+    connect: async () => { if (!connected && !connecting) await connect(); },
+    diag: (msg, isErr) => { if (replyEl) replyEl.textContent = msg; if (isErr) console.warn(msg); },
+    mountEl: document.getElementById('stage') || document.body,
+  });
+
+  // ─── Render loop ──────────────────────────────────────────────────────
+  const clock = new THREE.Clock();
+  renderer.setAnimationLoop(() => {
+    const dt = clock.getDelta();
+    const t = clock.elapsedTime;
+    updateScene(t, dt);
+    avatar.userData.mouthDrive = avatar.userData.speaking ? sampleMouth() : null;
+    updateAvatar(avatar, t, dt);
+    controls.update();
+    holoPass.uniforms.uTime.value = t;
+    // Projectable world tick — drives active projectables' per-frame
+    // billboard + chrome fade + avatar lean-in tween.
+    if (window.__holoChart && window.__holoChart.update) {
+      window.__holoChart.update(t, dt);
+    }
+    if (renderer.xr.isPresenting) {
+      renderer.render(scene, camera);
+    } else {
+      composer.render();
+    }
+    // CSS3DRenderer must run after WebGL so the DOM card layers on top of
+    // the canvas. Skipped in XR where the chart has no sensible placement.
+    if (!renderer.xr.isPresenting && window.__holoChart && window.__holoChart.renderCss) {
+      window.__holoChart.renderCss();
+    }
+  });
+</script>
+</body>
+</html>

@@ -1,0 +1,665 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<title>omo · automation · holo3</title>
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<script type="module" src="/text-overlay.js"></script>
+<script src="/voice-mode.js"></script>
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link
+  rel="stylesheet"
+  href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;700&family=Inter:wght@400;500;600;700&display=swap"
+/>
+<style>
+  :root {
+    --bg: #0A0E14;
+    --bg-2: #0E131B;
+    --bg-3: #131924;
+    --phosphor: #B8E4C9;
+    --phosphor-dim: #7FA48C;
+    --phosphor-faint: rgba(184, 228, 201, 0.28);
+    --amber: #F2C464;
+    --coral: #E87D7D;
+    --periwinkle: #9EAAF2;
+    --edge: rgba(184, 228, 201, 0.16);
+    --mono: "JetBrains Mono", ui-monospace, Menlo, monospace;
+    color-scheme: dark;
+  }
+  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+  html, body {
+    width: 100%; height: 100%;
+    background: var(--bg); color: var(--phosphor);
+    font-family: var(--mono); font-size: 12px; line-height: 1.5;
+    letter-spacing: 0.02em;
+    -webkit-font-smoothing: antialiased;
+  }
+  body {
+    background:
+      radial-gradient(ellipse at 30% 0%, rgba(184,228,201,0.04), transparent 60%),
+      radial-gradient(ellipse at 90% 100%, rgba(158,170,242,0.03), transparent 55%),
+      var(--bg);
+    display: grid;
+    grid-template-rows: auto 1fr;
+    height: 100vh; overflow: hidden;
+  }
+
+  .top {
+    display: flex; align-items: center; gap: 16px;
+    padding: 10px 18px; border-bottom: 1px solid var(--edge);
+    background: var(--bg-2);
+  }
+  .top .title { color: var(--amber); font-weight: 700; letter-spacing: 0.12em; text-transform: uppercase; }
+  .top .crumb { color: var(--phosphor-dim); text-transform: uppercase; letter-spacing: 0.1em; }
+  .top .spacer { flex: 1; }
+  .top .badge {
+    padding: 3px 8px; border: 1px solid var(--edge); color: var(--phosphor-dim);
+    text-transform: uppercase; letter-spacing: 0.1em; font-size: 10px;
+  }
+  .top .badge.ok { color: var(--phosphor); border-color: var(--phosphor-faint); }
+  .top .badge.warn { color: var(--amber); border-color: rgba(242,196,100,0.4); }
+  .top .badge.err { color: var(--coral); border-color: rgba(232,125,125,0.4); }
+
+  .stage { display: grid; grid-template-columns: 1fr 420px; gap: 0; min-height: 0; }
+  .canvas {
+    background: #000; position: relative; overflow: hidden;
+    border-right: 1px solid var(--edge);
+  }
+  .canvas iframe, .canvas img {
+    width: 100%; height: 100%; border: 0; display: block; object-fit: contain; background: #000;
+  }
+  .canvas .empty {
+    position: absolute; inset: 0;
+    display: flex; flex-direction: column; align-items: center; justify-content: center;
+    gap: 8px; color: var(--phosphor-dim);
+    text-transform: uppercase; letter-spacing: 0.15em; font-size: 11px;
+  }
+  .canvas .empty .face { font-size: 36px; color: var(--phosphor); letter-spacing: 0; }
+
+  /* crosshair overlay for the most recent click target */
+  .canvas .xhair {
+    position: absolute; pointer-events: none;
+    width: 24px; height: 24px; margin: -12px 0 0 -12px;
+    border: 2px solid var(--amber); border-radius: 50%;
+    box-shadow: 0 0 0 4px rgba(242,196,100,0.18);
+    animation: xhairPulse 1.6s ease-out forwards;
+  }
+  @keyframes xhairPulse {
+    0%   { transform: scale(0.5); opacity: 1; }
+    60%  { transform: scale(1.2); opacity: 0.9; }
+    100% { transform: scale(2.2); opacity: 0; }
+  }
+
+  .panel { background: var(--bg-2); overflow-y: auto; display: flex; flex-direction: column; }
+  .section { padding: 14px 16px; border-bottom: 1px solid var(--edge); }
+  .section h2 {
+    font-size: 10px; font-weight: 700; letter-spacing: 0.16em; text-transform: uppercase;
+    color: var(--amber); margin-bottom: 10px;
+  }
+  .row { display: flex; gap: 6px; flex-wrap: wrap; margin-bottom: 8px; align-items: center; }
+  .row:last-child { margin-bottom: 0; }
+  .lbl { color: var(--phosphor-dim); text-transform: uppercase; letter-spacing: 0.1em; font-size: 10px; min-width: 60px; }
+
+  button, input, select, textarea {
+    background: var(--bg-3); color: var(--phosphor);
+    border: 1px solid var(--edge); font-family: var(--mono); font-size: 12px;
+    padding: 6px 10px; outline: none; min-width: 0;
+  }
+  textarea {
+    width: 100%; min-height: 64px; resize: vertical; line-height: 1.45;
+  }
+  button {
+    cursor: pointer; text-transform: uppercase; letter-spacing: 0.08em;
+    transition: background 0.12s, border-color 0.12s, color 0.12s;
+  }
+  button:hover { border-color: var(--amber); color: var(--amber); }
+  button:disabled { opacity: 0.4; cursor: not-allowed; }
+  button.primary { background: var(--amber); color: var(--bg); border-color: var(--amber); font-weight: 700; }
+  button.primary:hover { background: var(--phosphor); border-color: var(--phosphor); color: var(--bg); }
+  button.danger:hover { border-color: var(--coral); color: var(--coral); }
+  input { flex: 1; }
+  input.tiny { flex: 0 0 70px; }
+
+  .log {
+    background: var(--bg);
+    padding: 10px 14px;
+    flex: 1; min-height: 160px;
+    overflow-y: auto;
+    font-size: 11px; line-height: 1.55;
+    border-top: 1px solid var(--edge);
+  }
+  .log .line { white-space: pre-wrap; word-break: break-word; margin-bottom: 4px; }
+  .log .line .t { color: var(--phosphor-dim); }
+  .log .line .ok { color: var(--phosphor); }
+  .log .line .err { color: var(--coral); }
+  .log .line .info { color: var(--periwinkle); }
+  .log .line .amber { color: var(--amber); }
+  .log .step {
+    border-left: 2px solid var(--phosphor-faint);
+    padding: 4px 10px; margin: 8px 0;
+    background: rgba(184,228,201,0.03);
+  }
+  .log .step .head { color: var(--amber); font-weight: 700; }
+  .log .step .note { color: var(--periwinkle); }
+  .log .step .thought { color: var(--phosphor); }
+  .log .step .tool { color: var(--phosphor-dim); }
+
+  .banner {
+    background: rgba(242,196,100,0.08); border: 1px solid rgba(242,196,100,0.3);
+    color: var(--amber); padding: 10px 12px; margin: 14px 16px 0;
+    font-size: 11px; line-height: 1.6;
+  }
+  .banner code { background: rgba(0,0,0,0.4); padding: 1px 6px; border: 1px solid var(--edge); color: var(--phosphor); }
+  .banner.err { background: rgba(232,125,125,0.08); border-color: rgba(232,125,125,0.3); color: var(--coral); }
+
+  ::-webkit-scrollbar { width: 8px; height: 8px; }
+  ::-webkit-scrollbar-track { background: var(--bg); }
+  ::-webkit-scrollbar-thumb { background: rgba(184,228,201,0.18); }
+</style>
+</head>
+<body>
+  <header class="top">
+    <span class="title">omo · automation</span>
+    <span class="crumb" id="crumb">/ holo3 → your mac</span>
+    <span class="spacer"></span>
+    <span class="badge" id="holoBadge">holo3: checking…</span>
+    <span class="badge" id="cdBadge">body: checking…</span>
+    <span class="badge" id="stepBadge">step 0/0</span>
+    <span class="badge" id="idBadge">no desktop</span>
+  </header>
+
+  <div id="setupBanner" class="banner" style="display:none">
+    <strong id="setupTitle">Setup:</strong>
+    <span id="setupBody"></span>
+  </div>
+  <div id="macWarn" class="banner" style="display:none">
+    <strong>⚠ Local Mac mode:</strong> Holo3 will move your real cursor and press real keys.
+    Grant <code>Python</code> Accessibility permission first
+    (System Settings → Privacy &amp; Security → Accessibility).
+    Slam the mouse into the <strong>top-left corner</strong> to abort. Keep hands off
+    the trackpad while it runs.
+  </div>
+
+  <div class="stage">
+    <div class="canvas" id="canvas">
+      <div class="empty" id="empty">
+        <div class="face">(◔‿◔)</div>
+        <div>type a goal → press RUN</div>
+        <div style="font-size:10px">holo3 will pilot a cloud desktop to do it</div>
+      </div>
+    </div>
+
+    <aside class="panel">
+      <section class="section">
+        <h2>goal</h2>
+        <textarea id="goal" placeholder="e.g. open firefox, search for 'best ramen in tokyo', and read me the first result"></textarea>
+        <div class="row" style="margin-top: 8px">
+          <span class="lbl">max steps</span>
+          <input class="tiny" id="maxSteps" type="number" value="15" min="1" max="60" />
+          <span class="lbl">delay (ms)</span>
+          <input class="tiny" id="stepDelay" type="number" value="0" min="0" max="5000" />
+        </div>
+        <div class="row">
+          <button class="primary" id="btnRun">▶ run</button>
+          <button class="danger" id="btnStop" disabled>■ stop</button>
+          <button id="btnShot" disabled>screenshot</button>
+        </div>
+      </section>
+
+      <section class="section">
+        <h2>body</h2>
+        <div class="row">
+          <span class="lbl">where</span>
+          <select id="backend">
+            <option value="mac" selected>your mac (local)</option>
+            <option value="browser">remote browser (browserbase)</option>
+          </select>
+        </div>
+        <div class="row" id="browserUrlRow" style="display:none">
+          <span class="lbl">start url</span>
+          <input id="startUrl" value="https://www.google.com" />
+        </div>
+        <div class="row" id="browserTimeoutRow" style="display:none">
+          <span class="lbl">timeout</span>
+          <select id="timeoutMs">
+            <option value="600">10 min</option>
+            <option value="900" selected>15 min</option>
+            <option value="1800">30 min</option>
+          </select>
+        </div>
+        <div class="row">
+          <button id="btnLaunch">launch</button>
+          <button id="btnRefresh">refresh</button>
+          <button class="danger" id="btnTerminate" disabled>terminate</button>
+        </div>
+      </section>
+
+      <div class="log" id="log"></div>
+    </aside>
+  </div>
+
+<script type="module">
+  const $ = (id) => document.getElementById(id);
+  const canvas = $('canvas');
+  const empty  = $('empty');
+  const log    = $('log');
+  const holoBadge = $('holoBadge');
+  const cdBadge   = $('cdBadge');
+  const stepBadge = $('stepBadge');
+  const idBadge   = $('idBadge');
+  const setupBanner = $('setupBanner');
+  const btnRun = $('btnRun');
+  const btnStop = $('btnStop');
+  const btnShot = $('btnShot');
+  const btnLaunch = $('btnLaunch');
+  const btnTerminate = $('btnTerminate');
+
+  let desktopId = null;
+  let streamMounted = false;
+  let running = false;
+  let stopRequested = false;
+  let stepCount = 0;
+  let pollTimer = null;
+  let screenSize = { w: 1280, h: 720 };
+  let history = [];   // [{ screenshot_b64, step, tool_output }]
+
+  const BACKENDS = {
+    mac: {
+      label: 'your mac',
+      crumb: '/ holo3 → your mac',
+      base: '/omo/api/holo3-mac',
+      profile: 'mac',
+      hasStream: false,
+      setupHint: 'Holo3 controls the Mac via <code>bin/holo3_mac.py</code> + pyautogui. ' +
+                 'If "body: NO HELPER" appears, install: <code>python3 -m venv ~/.omo/holo3-venv ' +
+                 '&amp;&amp; ~/.omo/holo3-venv/bin/pip install pyautogui pillow</code>.',
+    },
+    browser: {
+      label: 'browserbase chromium',
+      crumb: '/ holo3 → browserbase chromium',
+      base: '/omo/api/holo3-browser',
+      profile: 'browser',
+      hasStream: true,
+      setupHint: 'Add <code>BROWSER_API_KEY=…</code> + <code>BROWSER_PROJECT_ID=…</code> to <code>.env</code>.',
+    },
+  };
+  function backend() { return BACKENDS[$('backend').value] || BACKENDS.mac; }
+
+  // ─── small utils ─────────────────────────────────────────────────
+  function ts() {
+    const d = new Date();
+    return d.toTimeString().slice(0,8);
+  }
+  function el(tag, cls, text) {
+    const e = document.createElement(tag);
+    if (cls) e.className = cls;
+    if (text != null) e.textContent = text;
+    return e;
+  }
+  function logLine(kind, ...parts) {
+    let s = parts.map(p => typeof p === 'string' ? p : JSON.stringify(p)).join(' ');
+    const line = el('div', 'line');
+    line.appendChild(el('span', 't', `[${ts()}] `));
+    line.appendChild(el('span', kind, s));
+    log.appendChild(line);
+    log.scrollTop = log.scrollHeight;
+  }
+  function logStep(idx, step) {
+    const box = el('div', 'step');
+    box.appendChild(el('div', 'head', `step ${idx} · ${step?.tool_call?.tool_name || '?'}`));
+    if (step?.note)    box.appendChild(el('div', 'note',    `note: ${step.note}`));
+    if (step?.thought) box.appendChild(el('div', 'thought', `thought: ${step.thought}`));
+    box.appendChild(el('div', 'tool', `tool: ${JSON.stringify(step?.tool_call || {})}`));
+    log.appendChild(box);
+    log.scrollTop = log.scrollHeight;
+  }
+
+  async function api(method, path, body, signal) {
+    const r = await fetch(path, {
+      method,
+      headers: body ? { 'content-type': 'application/json' } : undefined,
+      body: body ? JSON.stringify(body) : undefined,
+      signal,
+    });
+    const text = await r.text();
+    let data; try { data = JSON.parse(text); } catch { data = { raw: text }; }
+    if (!r.ok || data?.ok === false) {
+      const msg = data?.error || data?.hint || r.statusText;
+      throw new Error(msg);
+    }
+    return data;
+  }
+
+  function setStepBadge() {
+    const max = Number($('maxSteps').value) || 0;
+    stepBadge.textContent = `step ${stepCount}/${max}`;
+  }
+  function setRunUI(isRunning) {
+    running = isRunning;
+    btnRun.disabled = isRunning;
+    btnStop.disabled = !isRunning;
+    btnLaunch.disabled = isRunning;
+  }
+
+  // ─── config / desktop bring-up ───────────────────────────────────
+  async function checkConfig() {
+    try {
+      const h = await api('GET', '/omo/api/holo3/status');
+      if (h.configured) {
+        holoBadge.textContent = `holo3: ${h.model}`;
+        holoBadge.classList.add('ok');
+      } else {
+        holoBadge.textContent = 'holo3: NO KEY';
+        holoBadge.classList.add('err');
+        setupBanner.style.display = 'block';
+      }
+    } catch (e) { holoBadge.textContent = 'holo3: error'; holoBadge.classList.add('err'); }
+    try {
+      const b = backend();
+      const c = await api('GET', `${b.base}/status`);
+      cdBadge.classList.remove('ok','err');
+      if (c.configured) {
+        cdBadge.textContent = `body: ${b.label}`;
+        cdBadge.classList.add('ok');
+        setupBanner.style.display = 'none';
+      } else {
+        cdBadge.textContent = `body: NO ${b.profile === 'mac' ? 'HELPER' : 'KEY'}`;
+        cdBadge.classList.add('err');
+        $('setupBody').innerHTML = b.setupHint + (c.hint ? ` <br><em>${c.hint}</em>` : '');
+        setupBanner.style.display = 'block';
+      }
+    } catch (e) { cdBadge.textContent = 'body: error'; cdBadge.classList.add('err'); }
+  }
+
+  function applyBackendUI() {
+    const b = backend();
+    $('crumb').textContent = b.crumb;
+    $('browserUrlRow').style.display     = b.hasStream ? '' : 'none';
+    $('browserTimeoutRow').style.display = b.hasStream ? '' : 'none';
+    $('macWarn').style.display = (b.profile === 'mac') ? 'block' : 'none';
+    if (desktopId) {
+      // Don't allow mid-session switch.
+      $('backend').value = b === BACKENDS.mac ? 'mac' : 'browser';
+    }
+  }
+
+  function mountStream(url) {
+    if (streamMounted) return;
+    empty.style.display = 'none';
+    const iframe = document.createElement('iframe');
+    iframe.src = url;
+    iframe.allow = 'clipboard-read; clipboard-write';
+    iframe.id = 'streamFrame';
+    canvas.appendChild(iframe);
+    streamMounted = true;
+    logLine('info', 'stream mounted ·', url);
+  }
+  function unmountStream() {
+    const f = $('streamFrame'); if (f) f.remove();
+    streamMounted = false;
+    empty.style.display = 'flex';
+  }
+
+  function showXhair(normX, normY) {
+    const rect = canvas.getBoundingClientRect();
+    // The iframe is object-fit:contain — figure out the letterbox.
+    const aspect = screenSize.w / screenSize.h;
+    const cw = rect.width, ch = rect.height;
+    let dispW, dispH, offX, offY;
+    if (cw / ch > aspect) { dispH = ch; dispW = ch * aspect; offX = (cw - dispW)/2; offY = 0; }
+    else                  { dispW = cw; dispH = cw / aspect; offX = 0; offY = (ch - dispH)/2; }
+    const x = offX + (normX / 1000) * dispW;
+    const y = offY + (normY / 1000) * dispH;
+    const dot = el('div', 'xhair');
+    dot.style.left = x + 'px';
+    dot.style.top  = y + 'px';
+    canvas.appendChild(dot);
+    setTimeout(() => dot.remove(), 1700);
+  }
+
+  async function pollStatus() {
+    if (!desktopId) return;
+    try {
+      const { data } = await api('GET', `${backend().base}/${desktopId}`);
+      if (!data) return;
+      idBadge.textContent = `${desktopId.slice(0,8)} · ${data.status}`;
+      idBadge.classList.add(data.status === 'running' ? 'ok' : 'warn');
+      if (data.status === 'running' && data.stream_url) mountStream(data.stream_url);
+      if (data.status === 'running') btnShot.disabled = false;
+      btnTerminate.disabled = !(data.status === 'running' || data.status === 'pending');
+    } catch (e) {
+      logLine('err', 'status:', e.message);
+    }
+  }
+
+  async function ensureDesktop() {
+    if (desktopId) {
+      await pollStatus();
+      return desktopId;
+    }
+    const b = backend();
+    const launchBody = b.hasStream
+      ? {
+          timeout_sec: Number($('timeoutMs').value) || 900,
+          start_url:   $('startUrl').value.trim() || 'https://www.google.com',
+        }
+      : {};
+    logLine('info', `launching ${b.label}…`);
+    const { data } = await api('POST', `${b.base}/launch`, launchBody);
+    desktopId = data.id;
+    idBadge.textContent = `${desktopId.slice(0,8)} · running`;
+    idBadge.classList.add('ok');
+    screenSize = { w: data.width || 1280, h: data.height || 800 };
+    if (data.stream_url) {
+      mountStream(data.stream_url);
+    } else if (data.base64_image) {
+      // No live stream — show the latest screenshot in the canvas.
+      renderLatestShot(data.base64_image);
+    } else {
+      empty.style.display = 'none';
+    }
+    btnShot.disabled = false;
+    btnTerminate.disabled = false;
+    logLine('ok', `${b.label} session`, desktopId, data.url ? '· ' + data.url : '');
+    if (pollTimer) clearInterval(pollTimer);
+    pollTimer = setInterval(pollStatus, 5000);
+    return desktopId;
+  }
+
+  function renderLatestShot(b64) {
+    let img = $('latestShot');
+    if (!img) {
+      img = document.createElement('img');
+      img.id = 'latestShot';
+      empty.style.display = 'none';
+      canvas.appendChild(img);
+    }
+    img.src = 'data:image/jpeg;base64,' + b64;
+  }
+
+  // ─── cyberdesk action helpers ────────────────────────────────────
+  async function cdAction(body, signal) {
+    const { data } = await api('POST', `${backend().base}/${desktopId}/action`, body, signal);
+    return data;
+  }
+  async function takeScreenshot(signal) {
+    const data = await cdAction({ type: 'screenshot' }, signal);
+    if (!data?.base64_image) throw new Error('screenshot returned no image');
+    // Mirror the latest frame onto the canvas when there's no live stream.
+    if (!streamMounted) renderLatestShot(data.base64_image);
+    // Read screen dimensions off the image (so click coords scale right).
+    const img = new Image();
+    await new Promise((res, rej) => {
+      img.onload = res; img.onerror = () => rej(new Error('failed to decode screenshot'));
+      img.src = 'data:image/jpeg;base64,' + data.base64_image;
+    });
+    screenSize = { w: img.naturalWidth, h: img.naturalHeight };
+    return data.base64_image;
+  }
+
+  // Map a Holo3 tool_call → a cyberdesk action (executes + returns short summary).
+  async function execTool(tool_call, pixel_xy, signal) {
+    const name = tool_call?.tool_name;
+    if (name === 'click') {
+      const { x, y } = pixel_xy || { x: 0, y: 0 };
+      const button = tool_call.button || 'left';
+      showXhair(tool_call.x, tool_call.y);
+      await cdAction({ type: 'click_mouse', x, y, button }, signal);
+      return `clicked ${button} @ (${x},${y}) — ${tool_call.element}`;
+    }
+    if (name === 'write') {
+      if (tool_call.overwrite) {
+        await cdAction({ type: 'press_keys', keys: ['ctrl', 'a'] }, signal);
+      }
+      await cdAction({ type: 'type', text: tool_call.content }, signal);
+      if (tool_call.press_enter) {
+        await cdAction({ type: 'press_keys', keys: 'Return' }, signal);
+      }
+      return `typed ${JSON.stringify(tool_call.content.slice(0, 80))}` +
+             (tool_call.press_enter ? ' [enter]' : '');
+    }
+    if (name === 'scroll') {
+      await cdAction({ type: 'scroll', direction: tool_call.direction, amount: tool_call.amount }, signal);
+      return `scrolled ${tool_call.direction} ${tool_call.amount}`;
+    }
+    if (name === 'press_keys') {
+      const raw = String(tool_call.keys || '').trim();
+      await cdAction({ type: 'press_keys', keys: raw }, signal);
+      return `keys ${raw}`;
+    }
+    if (name === 'navigate') {
+      await cdAction({ type: 'navigate', url: tool_call.url }, signal);
+      return `nav ${tool_call.url}`;
+    }
+    if (name === 'answer') return `[answer] ${tool_call.content}`;
+    throw new Error(`unknown tool: ${name}`);
+  }
+
+  // ─── the agent loop ──────────────────────────────────────────────
+  let abortCtl = null;
+  async function runLoop() {
+    const goal = $('goal').value.trim();
+    if (!goal) return logLine('err', 'enter a goal first');
+    const maxSteps = Number($('maxSteps').value) || 15;
+    const stepDelay = Number($('stepDelay').value) || 0;
+
+    stopRequested = false;
+    history = [];
+    stepCount = 0;
+    setStepBadge();
+    setRunUI(true);
+    abortCtl = new AbortController();
+
+    try {
+      await ensureDesktop();
+      logLine('amber', `goal: ${goal}`);
+
+      for (let i = 1; i <= maxSteps; i++) {
+        if (stopRequested) { logLine('err', 'stopped by user'); break; }
+        stepCount = i; setStepBadge();
+
+        const screenshot_b64 = await takeScreenshot(abortCtl.signal);
+
+        // Server uses last ~3 images; ship only the last 2 turns' shots so
+        // the request body stays under a megabyte even after 20 steps.
+        const KEEP_IMG = 2;
+        const trimmedHistory = history.map((h, i) => ({
+          screenshot_b64: i >= history.length - KEEP_IMG ? h.screenshot_b64 : undefined,
+          step: h.step,
+          tool_output: h.tool_output,
+        }));
+        const { step, pixel_xy } = await api('POST', '/omo/api/holo3/step', {
+          goal,
+          profile: backend().profile,
+          history: trimmedHistory,
+          screenshot_b64,
+          screen_width: screenSize.w,
+          screen_height: screenSize.h,
+        }, abortCtl.signal);
+
+        logStep(i, step);
+
+        if (step?.tool_call?.tool_name === 'answer') {
+          logLine('ok', '✓ task complete');
+          history.push({ screenshot_b64, step, tool_output: null });
+          break;
+        }
+
+        let tool_output;
+        try {
+          tool_output = await execTool(step.tool_call, pixel_xy, abortCtl.signal);
+          logLine('ok', '· ' + tool_output);
+        } catch (err) {
+          tool_output = `error: ${err.message}`;
+          logLine('err', '· ' + tool_output);
+        }
+        history.push({ screenshot_b64, step, tool_output });
+
+        if (stepDelay > 0) await new Promise(r => setTimeout(r, stepDelay));
+      }
+
+      if (stepCount >= maxSteps) logLine('amber', `hit max steps (${maxSteps})`);
+    } catch (err) {
+      logLine('err', 'loop:', err.message);
+    } finally {
+      setRunUI(false);
+      abortCtl = null;
+    }
+  }
+
+  // ─── wire up controls ────────────────────────────────────────────
+  btnRun.addEventListener('click', runLoop);
+  btnStop.addEventListener('click', () => {
+    stopRequested = true;
+    if (abortCtl) abortCtl.abort();
+    logLine('info', 'stop requested…');
+  });
+  btnShot.addEventListener('click', async () => {
+    if (!desktopId) return logLine('err', 'no desktop');
+    try {
+      const b64 = await takeScreenshot();
+      logLine('ok', `screenshot ${screenSize.w}×${screenSize.h}`);
+      // Briefly overlay the still image.
+      const old = $('shotImg'); if (old) old.remove();
+      const img = document.createElement('img');
+      img.id = 'shotImg';
+      img.src = 'data:image/jpeg;base64,' + b64;
+      img.style.position = 'absolute'; img.style.inset = '0';
+      img.style.opacity = '0'; img.style.transition = 'opacity 0.3s';
+      canvas.appendChild(img);
+      requestAnimationFrame(() => { img.style.opacity = '1'; });
+      setTimeout(() => { img.style.opacity = '0'; setTimeout(() => img.remove(), 400); }, 2200);
+    } catch (e) { logLine('err', 'screenshot:', e.message); }
+  });
+  btnLaunch.addEventListener('click', async () => {
+    try { await ensureDesktop(); } catch (e) { logLine('err', 'launch:', e.message); }
+  });
+  $('btnRefresh').addEventListener('click', pollStatus);
+  btnTerminate.addEventListener('click', async () => {
+    if (!desktopId) return;
+    try {
+      await api('POST', `${backend().base}/${desktopId}/stop`);
+      logLine('ok', 'terminated', desktopId);
+      desktopId = null;
+      if (pollTimer) clearInterval(pollTimer);
+      unmountStream();
+      idBadge.textContent = 'no desktop';
+      idBadge.classList.remove('ok','warn');
+      btnTerminate.disabled = true;
+      btnShot.disabled = true;
+    } catch (e) { logLine('err', 'terminate:', e.message); }
+  });
+  $('maxSteps').addEventListener('input', setStepBadge);
+  $('backend').addEventListener('change', () => {
+    applyBackendUI();
+    checkConfig();
+  });
+
+  applyBackendUI();
+  checkConfig();
+  setStepBadge();
+  logLine('info', 'automation ready');
+</script>
+</body>
+</html>

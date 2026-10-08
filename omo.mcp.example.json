@@ -1,0 +1,24 @@
+{
+  "_comment": "Sample omo MCP config for embedded Claude Code agents. Copy to omo.mcp.json and edit, then point launches at it via spawn_agent_task({mcp_config:'./omo.mcp.json'}) or claude_relaunch_session({mcp_config:'./omo.mcp.json'}). Or set it as the default by exporting OMO_MCP_CONFIG=./omo.mcp.json.",
+  "mcpServers": {
+    "playwright": {
+      "command": "npx",
+      "args": ["-y", "@playwright/mcp"]
+    },
+    "vercel": {
+      "_comment": "Set your Vercel token via environment, then uncomment.",
+      "command": "npx",
+      "args": ["-y", "@vercel/mcp"],
+      "env": {
+        "VERCEL_TOKEN": "${VERCEL_TOKEN}"
+      },
+      "_disabled": true
+    },
+    "omo-events": {
+      "_comment": "Hypothetical: a server that exposes hq_query and the live event ring as MCP tools so the agent can read your Stripe / Gmail / GitHub state directly. Build at src/mcp/omo_events.js (not yet implemented).",
+      "command": "node",
+      "args": ["./src/mcp/omo_events.js"],
+      "_disabled": true
+    }
+  }
+}

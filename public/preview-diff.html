@@ -1,0 +1,463 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>omo / preview</title>
+  <script type="module" src="/text-overlay.js"></script>
+  <script src="/voice-mode.js"></script>
+  <style>
+    :root {
+      --bg:        #f6f1e7;
+      --bg-2:      #efe7d6;
+      --ink:       #2a241c;
+      --ink-2:     #6f6457;
+      --ink-3:     #9a8e7e;
+      --accent:    #b85040;
+      --add:       #3e7b5a;
+      --add-bg:    #d8ebdf;
+      --del:       #b85040;
+      --del-bg:    #f1d9d4;
+      --ctx-bg:    #faf6ec;
+      --line:      #d8cebb;
+      --pill-bg:   #ebe1cc;
+      --hover:     #e9dec6;
+      --mono:      "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
+      --serif:     ui-rounded, "SF Pro Rounded", "Avenir Next", system-ui, sans-serif;
+    }
+    * { box-sizing: border-box; }
+    html, body {
+      margin: 0; padding: 0;
+      background: var(--bg); color: var(--ink);
+      font-family: var(--serif);
+      height: 100%; overflow: hidden;
+    }
+    body { display: flex; flex-direction: column; }
+    header {
+      flex: 0 0 auto;
+      padding: 14px 20px;
+      border-bottom: 1px solid var(--line);
+      background: var(--bg-2);
+      display: flex; align-items: center; gap: 14px;
+    }
+    header .title { font-size: 16px; font-weight: 600; letter-spacing: 0.2px; }
+    header .who   { font-size: 13px; color: var(--ink-2); }
+    header .stat  {
+      display: inline-flex; gap: 10px; align-items: center;
+      padding: 4px 10px; border-radius: 999px;
+      background: var(--pill-bg); font-family: var(--mono); font-size: 12px;
+    }
+    header .stat .plus  { color: var(--add); }
+    header .stat .minus { color: var(--del); }
+    header .spacer { flex: 1; }
+    header .busy {
+      font-size: 11px; font-family: var(--mono);
+      padding: 2px 8px; border-radius: 999px;
+      background: var(--accent); color: white;
+      animation: pulse 1.6s ease-in-out infinite;
+    }
+    @keyframes pulse { 50% { opacity: 0.55; } }
+    .actions { display: flex; gap: 8px; }
+    .actions button {
+      font-family: var(--serif); font-size: 13px;
+      padding: 7px 14px; border-radius: 8px;
+      border: 1px solid var(--line); background: var(--bg);
+      color: var(--ink); cursor: pointer;
+      transition: background 0.12s, transform 0.12s, color 0.12s;
+    }
+    .actions button:hover:not(:disabled) { background: var(--hover); }
+    .actions button:disabled { opacity: 0.4; cursor: default; }
+    .actions .accept { background: var(--add); color: white; border-color: var(--add); }
+    .actions .accept:hover:not(:disabled) { background: #356a4e; }
+    .actions .discard { background: var(--del); color: white; border-color: var(--del); }
+    .actions .discard:hover:not(:disabled) { background: #9c4236; }
+
+    main {
+      flex: 1 1 auto;
+      display: grid;
+      grid-template-columns: 240px 1fr;
+      min-height: 0;
+    }
+    aside {
+      border-right: 1px solid var(--line);
+      background: var(--bg-2);
+      overflow: auto;
+      padding: 10px 0;
+    }
+    aside .file {
+      padding: 8px 14px;
+      cursor: pointer;
+      border-left: 3px solid transparent;
+      font-size: 12px; font-family: var(--mono);
+      color: var(--ink);
+      display: flex; align-items: baseline; gap: 8px;
+      white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+    }
+    aside .file:hover { background: var(--hover); }
+    aside .file.active {
+      background: var(--bg);
+      border-left-color: var(--accent);
+    }
+    aside .file .status { color: var(--ink-3); font-size: 10px; width: 14px; flex: 0 0 14px; }
+    aside .file .status.A { color: var(--add); }
+    aside .file .status.D { color: var(--del); }
+    aside .file .status.M { color: var(--ink-2); }
+    aside .file .status.\? { color: var(--add); }
+    aside .file .counts { font-size: 10px; color: var(--ink-3); margin-left: auto; }
+    aside .file .counts .plus { color: var(--add); }
+    aside .file .counts .minus { color: var(--del); }
+
+    section.diff {
+      overflow: auto;
+      padding: 16px;
+      background: var(--ctx-bg);
+      font-family: var(--mono);
+      font-size: 12.5px;
+      line-height: 1.55;
+    }
+    .file-block { margin-bottom: 28px; }
+    .file-block .head {
+      display: flex; align-items: center; gap: 10px;
+      padding: 6px 10px; margin-bottom: 6px;
+      background: var(--bg-2); border-radius: 6px;
+      font-size: 12px; color: var(--ink-2);
+      position: sticky; top: 0;
+      border: 1px solid var(--line);
+    }
+    .file-block .head strong { color: var(--ink); font-family: var(--mono); }
+    pre.hunk { margin: 0; white-space: pre; tab-size: 4; }
+    .hunk-header { color: var(--ink-3); background: transparent; padding: 2px 0; }
+    .line { padding: 0 8px; border-radius: 2px; }
+    .line.add { background: var(--add-bg); color: #1d4631; }
+    .line.del { background: var(--del-bg); color: #6f2218; }
+    .line.context { color: var(--ink); }
+
+    .empty, .error {
+      grid-column: 1 / -1;
+      display: flex; align-items: center; justify-content: center;
+      padding: 60px 20px; text-align: center;
+      color: var(--ink-2);
+    }
+    .empty h2, .error h2 { margin: 0 0 6px; color: var(--ink); font-weight: 600; }
+    .empty p, .error p { margin: 0; max-width: 520px; line-height: 1.5; }
+
+    /* Toast for action results */
+    .toast {
+      position: fixed; bottom: 18px; left: 50%; transform: translateX(-50%);
+      padding: 10px 16px; border-radius: 8px;
+      background: var(--ink); color: var(--bg);
+      font-size: 13px; box-shadow: 0 4px 16px rgba(0,0,0,0.18);
+      max-width: 80%; text-align: center;
+      opacity: 0; transition: opacity 0.18s, transform 0.18s;
+      pointer-events: none;
+    }
+    .toast.show { opacity: 1; transform: translateX(-50%) translateY(-4px); }
+    .toast.error { background: var(--del); }
+    .toast.ok { background: var(--add); }
+  </style>
+</head>
+<body>
+  <header>
+    <div class="title">PREVIEW</div>
+    <div class="who" id="who">loading…</div>
+    <div class="stat" id="stat" style="display:none">
+      <span id="stat-files">0 files</span>
+      <span class="plus" id="stat-plus">+0</span>
+      <span class="minus" id="stat-minus">−0</span>
+    </div>
+    <div class="busy" id="busy" style="display:none">live</div>
+    <div class="spacer"></div>
+    <div class="actions">
+      <button id="btn-refresh" title="reload diff">↻</button>
+      <button id="btn-discard"   class="discard"  disabled>Discard</button>
+      <button id="btn-branch"    title="commit on new branch" disabled>On branch…</button>
+      <button id="btn-accept"    class="accept"   disabled>Accept</button>
+    </div>
+  </header>
+  <main id="main">
+    <aside id="files"></aside>
+    <section class="diff" id="diff">
+      <div class="empty"><div><h2>loading…</h2><p>fetching agent diff</p></div></div>
+    </section>
+  </main>
+  <div class="toast" id="toast"></div>
+  <script>
+    (() => {
+      const params = new URLSearchParams(location.search);
+      const agentRef = params.get('agent') || '';
+      if (!agentRef) {
+        document.getElementById('diff').innerHTML =
+          '<div class="error"><div><h2>no agent</h2><p>missing ?agent=&lt;callsign|id&gt; in the URL</p></div></div>';
+        return;
+      }
+
+      const $who    = document.getElementById('who');
+      const $stat   = document.getElementById('stat');
+      const $sf     = document.getElementById('stat-files');
+      const $sp     = document.getElementById('stat-plus');
+      const $sm     = document.getElementById('stat-minus');
+      const $busy   = document.getElementById('busy');
+      const $files  = document.getElementById('files');
+      const $diff   = document.getElementById('diff');
+      const $refresh = document.getElementById('btn-refresh');
+      const $accept = document.getElementById('btn-accept');
+      const $branch = document.getElementById('btn-branch');
+      const $discard = document.getElementById('btn-discard');
+      const $toast  = document.getElementById('toast');
+
+      function showToast(msg, kind = '') {
+        $toast.textContent = msg;
+        $toast.className = 'toast show ' + kind;
+        setTimeout(() => $toast.classList.remove('show'), 2400);
+      }
+
+      function escapeHtml(s) {
+        return String(s ?? '').replace(/[&<>"']/g, (ch) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[ch]));
+      }
+
+      let lastData = null;
+
+      function renderEmpty(msg, sub) {
+        $files.innerHTML = '';
+        $diff.innerHTML = `<div class="empty"><div><h2>${escapeHtml(msg)}</h2><p>${escapeHtml(sub || '')}</p></div></div>`;
+        $accept.disabled = $branch.disabled = $discard.disabled = true;
+      }
+      function renderError(msg, sub) {
+        $files.innerHTML = '';
+        $diff.innerHTML = `<div class="error"><div><h2>${escapeHtml(msg)}</h2><p>${escapeHtml(sub || '')}</p></div></div>`;
+        $accept.disabled = $branch.disabled = $discard.disabled = true;
+      }
+
+      // Unified-diff parser — same shape as src/hermes/index.js' parseUnifiedDiff,
+      // adapted for browser rendering. Splits the multi-file patch into
+      // per-file blocks so the side panel and the diff panel stay aligned.
+      function parseMultiFileDiff(text) {
+        const files = new Map(); // path -> { path, header, hunks: [{header, lines}] }
+        const lines = (text || '').split(/\r?\n/);
+        let current = null;
+        let currentFile = null;
+        let oldLn = 0, newLn = 0;
+
+        for (let i = 0; i < lines.length; i++) {
+          const raw = lines[i];
+          if (raw.startsWith('diff --git ')) {
+            // diff --git a/<path> b/<path>
+            const m = raw.match(/^diff --git a\/(.+?) b\/(.+)$/);
+            const path = m ? m[2] : raw.slice(11);
+            currentFile = { path, hunks: [] };
+            files.set(path, currentFile);
+            current = null;
+            continue;
+          }
+          if (raw.startsWith('--- ') || raw.startsWith('+++ ') ||
+              raw.startsWith('index ') || raw.startsWith('new file mode') ||
+              raw.startsWith('deleted file mode')) continue;
+          if (raw.startsWith('@@')) {
+            const m = raw.match(/^@@ -(\d+)(?:,\d+)? \+(\d+)(?:,\d+)? @@/);
+            if (!m) continue;
+            oldLn = Number(m[1]); newLn = Number(m[2]);
+            current = { header: raw, lines: [] };
+            (currentFile?.hunks || []).push(current);
+            continue;
+          }
+          if (!current) continue;
+          if (raw.startsWith('\\ ')) continue;
+          const ch = raw[0];
+          const body = raw.slice(1);
+          if (ch === '+') {
+            current.lines.push({ kind: 'add', text: body, oldLn: null, newLn });
+            newLn++;
+          } else if (ch === '-') {
+            current.lines.push({ kind: 'del', text: body, oldLn, newLn: null });
+            oldLn++;
+          } else if (ch === ' ' || ch === undefined) {
+            current.lines.push({ kind: 'context', text: body, oldLn, newLn });
+            oldLn++; newLn++;
+          }
+        }
+        return [...files.values()];
+      }
+
+      function fileBlockHtml(fb, stat) {
+        const head = `<div class="head">
+          <strong>${escapeHtml(fb.path)}</strong>
+          ${stat ? `<span class="plus" style="color:var(--add)">+${stat.additions ?? 0}</span> <span class="minus" style="color:var(--del)">−${stat.deletions ?? 0}</span>` : ''}
+        </div>`;
+        if (!fb.hunks || fb.hunks.length === 0) {
+          return `<div class="file-block" id="fb-${cssId(fb.path)}">${head}<pre class="hunk"><span class="hunk-header">(new file or no hunks)</span></pre></div>`;
+        }
+        const hunks = fb.hunks.map((h) => {
+          const lineHtml = h.lines.map((ln) => {
+            const cls = ln.kind === 'add' ? 'add' : ln.kind === 'del' ? 'del' : 'context';
+            const prefix = ln.kind === 'add' ? '+' : ln.kind === 'del' ? '−' : ' ';
+            return `<span class="line ${cls}">${prefix}${escapeHtml(ln.text)}</span>`;
+          }).join('\n');
+          return `<span class="hunk-header">${escapeHtml(h.header)}</span>\n${lineHtml}`;
+        }).join('\n\n');
+        return `<div class="file-block" id="fb-${cssId(fb.path)}">${head}<pre class="hunk">${hunks}</pre></div>`;
+      }
+
+      function cssId(s) { return s.replace(/[^A-Za-z0-9]/g, '_'); }
+
+      function render(data) {
+        lastData = data;
+        if (!data || !data.ok) {
+          renderError(data?.error || 'preview failed', data?.code || '');
+          return;
+        }
+        $who.textContent = data.agent_name ? `${data.agent_name} · ${data.agent_id}` : data.agent_id;
+        $busy.style.display = data.is_busy ? '' : 'none';
+
+        const files = data.files || [];
+        if (files.length === 0) {
+          $stat.style.display = 'none';
+          renderEmpty('workspace clean', `${data.agent_name || 'agent'} hasn't changed anything.`);
+          return;
+        }
+        $stat.style.display = '';
+        $sf.textContent = `${data.stat.fileCount} file${data.stat.fileCount === 1 ? '' : 's'}`;
+        $sp.textContent = `+${data.stat.added}`;
+        $sm.textContent = `−${data.stat.removed}`;
+
+        // Side panel
+        const fileByPath = new Map(files.map((f) => [f.path, f]));
+        $files.innerHTML = files.map((f) => `
+          <div class="file" data-path="${escapeHtml(f.path)}">
+            <span class="status ${escapeHtml(f.status)}">${escapeHtml(f.status)}</span>
+            <span class="path">${escapeHtml(f.path)}</span>
+            <span class="counts"><span class="plus">+${f.additions ?? 0}</span> <span class="minus">−${f.deletions ?? 0}</span></span>
+          </div>`).join('');
+
+        // Diff panel
+        const parsed = parseMultiFileDiff(data.diff_text || '');
+        if (parsed.length === 0 && files.length > 0) {
+          // Untracked-only or empty diff text — render placeholders.
+          $diff.innerHTML = files.map((f) => fileBlockHtml({ path: f.path, hunks: [] }, f)).join('');
+        } else {
+          $diff.innerHTML = parsed.map((fb) => fileBlockHtml(fb, fileByPath.get(fb.path))).join('');
+        }
+
+        // Wire up clicks on the file list → scroll to block
+        $files.querySelectorAll('.file').forEach((el) => {
+          el.addEventListener('click', () => {
+            const path = el.dataset.path;
+            $files.querySelectorAll('.file.active').forEach((a) => a.classList.remove('active'));
+            el.classList.add('active');
+            const target = document.getElementById('fb-' + cssId(path));
+            if (target) target.scrollIntoView({ behavior: 'smooth', block: 'start' });
+          });
+        });
+        const first = $files.querySelector('.file');
+        if (first) first.classList.add('active');
+
+        // Enable actions
+        $accept.disabled = $branch.disabled = $discard.disabled = !!data.is_busy;
+        if (data.is_busy) {
+          $accept.title = $branch.title = $discard.title = 'agent is still working — wait for task to finish';
+        } else {
+          $accept.title = 'apply diff onto your main checkout (unstaged)';
+          $branch.title = 'commit diff onto a new branch';
+          $discard.title = 'reset workspace to baseline';
+        }
+      }
+
+      async function load() {
+        try {
+          const r = await fetch('/omo/api/agents/' + encodeURIComponent(agentRef) + '/diff', { cache: 'no-store' });
+          const j = await r.json().catch(() => ({ ok: false, error: 'bad json' }));
+          render(j);
+        } catch (err) {
+          renderError('couldn’t load', String(err?.message || err));
+        }
+      }
+
+      async function call(path, body) {
+        const r = await fetch(path, {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify(body || {}),
+        });
+        return r.json().catch(() => ({ ok: false, error: 'bad json' }));
+      }
+
+      $refresh.addEventListener('click', load);
+
+      $accept.addEventListener('click', async () => {
+        if (!confirm(`Apply ${lastData.stat.fileCount} file(s) onto your main checkout (unstaged)?`)) return;
+        $accept.disabled = true;
+        const r = await call('/omo/api/agents/' + encodeURIComponent(agentRef) + '/accept', { mode: 'apply' });
+        if (r.ok) {
+          showToast(`merged ${r.stat?.fileCount || ''} file(s) into your checkout`, 'ok');
+          setTimeout(load, 600);
+        } else if (r.code === 'CONFLICT') {
+          const paths = r.conflicting_paths || [];
+          const summary = paths.length ? `\n\nconflicting:\n  ${paths.slice(0,6).join('\n  ')}${paths.length > 6 ? `\n  (+${paths.length-6} more)` : ''}` : '';
+          const ans = prompt(
+            `CONFLICT — overlapping edits.${summary}\n\nChoose:\n` +
+            `  1 = try git 3-way merge (fast, automatic)\n` +
+            `  2 = have the agent fix it (smarter, slower)\n` +
+            `  3 = stash mine, apply theirs, reapply mine on top\n` +
+            `  4 = cancel`,
+            '1'
+          );
+          if (ans === null) { $accept.disabled = false; }
+          else if (ans.trim() === '1') {
+            const r2 = await call('/omo/api/agents/' + encodeURIComponent(agentRef) + '/accept', { mode: 'three_way' });
+            if (r2.ok && !r2.partial) { showToast('3-way merged cleanly', 'ok'); setTimeout(load, 600); }
+            else if (r2.ok && r2.partial) {
+              const escalate = confirm(`3-way got most of it but conflict markers remain in:\n  ${(r2.files_with_markers||[]).join('\n  ')}\n\nOK = ask the agent to finish. Cancel = leave them for you.`);
+              if (escalate) {
+                const r3 = await call('/omo/api/agents/' + encodeURIComponent(agentRef) + '/resolve-conflict', { conflicting_paths: r2.files_with_markers });
+                if (r3.ok) showToast('agent dispatched — watch the squad monitor', 'ok');
+                else { showToast(`resolve failed: ${r3.error || r3.code}`, 'error'); $accept.disabled = false; }
+              } else { setTimeout(load, 600); }
+            } else { showToast(`3-way failed: ${r2.error || r2.code}`, 'error'); $accept.disabled = false; }
+          } else if (ans.trim() === '2') {
+            const r2 = await call('/omo/api/agents/' + encodeURIComponent(agentRef) + '/resolve-conflict', { conflicting_paths: paths });
+            if (r2.ok) showToast('agent dispatched — watch the squad monitor and retry shipping after task_complete', 'ok');
+            else { showToast(`resolve failed: ${r2.error || r2.code}`, 'error'); $accept.disabled = false; }
+          } else if (ans.trim() === '3') {
+            const r2 = await call('/omo/api/agents/' + encodeURIComponent(agentRef) + '/accept', { mode: 'stash_and_apply' });
+            if (r2.ok) { showToast(r2.note || 'stashed, applied, re-applied', 'ok'); setTimeout(load, 600); }
+            else if (r2.code === 'REAPPLY_CONFLICT') { showToast(`partial — your work is in stash@{0}`, 'error'); setTimeout(load, 800); }
+            else { showToast(`stash-and-apply failed: ${r2.error || r2.code}`, 'error'); $accept.disabled = false; }
+          } else { $accept.disabled = false; }
+        } else {
+          showToast(`accept failed: ${r.error || r.code}`, 'error');
+          $accept.disabled = false;
+        }
+      });
+
+      $branch.addEventListener('click', async () => {
+        const branch = prompt('branch name (leave blank for auto)', '') || null;
+        $branch.disabled = true;
+        const r = await call('/omo/api/agents/' + encodeURIComponent(agentRef) + '/accept', { mode: 'commit', branch });
+        if (r.ok) {
+          showToast(`committed on ${r.branch}`, 'ok');
+          setTimeout(load, 600);
+        } else {
+          showToast(`commit failed: ${r.error || r.code}`, 'error');
+          $branch.disabled = false;
+        }
+      });
+
+      $discard.addEventListener('click', async () => {
+        if (!confirm(`Scrap everything ${lastData?.agent_name || 'this agent'} did?`)) return;
+        $discard.disabled = true;
+        const r = await call('/omo/api/agents/' + encodeURIComponent(agentRef) + '/discard');
+        if (r.ok) {
+          showToast(`cleared ${r.files_cleared?.length || 0} file(s)`, 'ok');
+          setTimeout(load, 600);
+        } else {
+          showToast(`discard failed: ${r.error || r.code}`, 'error');
+          $discard.disabled = false;
+        }
+      });
+
+      load();
+      // Poll while the agent is busy so the preview tracks the live work.
+      setInterval(() => { if (lastData?.is_busy) load(); }, 2500);
+    })();
+  </script>
+</body>
+</html>
